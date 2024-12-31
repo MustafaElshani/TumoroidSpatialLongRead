@@ -1,0 +1,1210 @@
+
+# Load Libraries
+
+```{r}
+library(Giotto)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(RColorBrewer)
+library(terra)
+library(exifr)
+
+```
+
+```{r}
+# Set the Python path to the existing environment
+python_path <- "/home/mustafa/miniforge3/envs/giotto_env/bin/python"
+
+# Set up Giotto instructions with the manually specified Python path
+results_folder <- "./results/SpatialTrans_combined_ONTtrans/ONTtrans"
+
+# Create the results folder if it doesn't exist
+if (!dir.exists(results_folder)) {
+  dir.create(results_folder, recursive = TRUE)
+}
+
+# Create Giotto instructions with Python path
+instrs <- createGiottoInstructions(
+  save_plot = TRUE, 
+  save_dir = results_folder, 
+  show_plot = FALSE, 
+  python_path = python_path
+)
+
+# Check instructions to confirm the setup
+print(instrs)
+
+```
+
+
+# Load Each Visium Section
+
+```{r}
+SpatialTrans_DMSO_ONTtrans <- loadGiotto("./GiottoSuite_DMSO_ONTtrans")
+#SpatialTrans_15uM7738_ONTgene <- loadGiotto("./GiottoSuite_15uM7738_ONTgene")
+SpatialTrans_30uM7738_ONTtrans <- loadGiotto("./GiottoSuite_30uM7738_ONTtrans")
+```
+
+# Check the load Giotto Objects 
+## DMSO
+```{r}
+# Set up the results folder
+SpatialTrans_DMSO_ONTtrans_inTissue <- spatPlot2D(gobject = SpatialTrans_DMSO_ONTtrans, 
+           cell_color = "in_tissue",
+           show_image = TRUE, 
+           point_size = 2.5,
+           cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+           point_alpha = 0.5,
+           show_plot = TRUE )
+
+print(SpatialTrans_DMSO_ONTtrans_inTissue)
+# Define the save parameters
+base_save_parameters <- list(
+  save_dir = results_folder,  # Directory where the plots will be saved
+  save_format = "png",        # Save as PNG format
+  units = "in",               # Units for width and height (inches)
+  base_width = 10,             # Width of the plot
+  base_height = 10,            # Height of the plot
+  dpi = 600                   # Resolution (DPI)
+)
+
+```
+
+## 15uM7738
+```{r}
+SpatialTrans_15uM7738_ONTgene_inTissue <- spatPlot2D(gobject = SpatialTrans_15uM7738_ONTgene, 
+           cell_color = "in_tissue",
+           show_image = TRUE, 
+           point_size = 2.5,
+           cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+           point_alpha = 0.5,
+           show_plot = TRUE )
+
+print(SpatialTrans_15uM7738_ONTgene_inTissue)
+
+```
+
+## 30uM7738
+```{r}
+SpatialTrans_30uM7738_ONTtrans_inTissue <- spatPlot2D(gobject = SpatialTrans_30uM7738_ONTtrans, 
+           cell_color = "in_tissue",
+           show_image = TRUE, 
+           point_size = 2.5,
+           cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+           point_alpha = 0.5,
+           show_plot = TRUE )
+
+print(SpatialTrans_30uM7738_ONTtrans_inTissue)
+```
+
+# Join Giotto Objects
+
+```{r}
+SpatialTrans_combined_ONTtrans <- joinGiottoObjects(gobject_list = list(SpatialTrans_DMSO_ONTtrans,SpatialTrans_30uM7738_ONTtrans),
+                                   gobject_names = c("DMSO", "30uM7738"),
+                                   join_method = "shift", x_padding = -10000)
+
+# Printing the file structure for the individual datasets
+print(head(pDataDT(SpatialTrans_combined_ONTtrans)))
+print(SpatialTrans_combined_ONTtrans)
+```
+
+```{r}
+# Create the directory if it doesn't exist
+if (!dir.exists(results_folder)) {
+  dir.create(results_folder, recursive = TRUE)
+}
+
+# Define the save parameters
+base_save_parameters <- list(
+  save_dir = results_folder,  # Directory where the plots will be saved
+  save_format = "png",        # Save as PNG format
+  units = "in",               # Units for width and height (inches)
+  base_width = 10,            # Width of the plot
+  base_height = 10,           # Height of the plot
+  dpi = 600                   # Resolution (DPI)
+)
+
+
+SpatialTrans_combined_ONTtrans_inTissue <- spatPlot2D(gobject = SpatialTrans_combined_ONTtrans, 
+           cell_color = "in_tissue", 
+           cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+           show_image = TRUE, 
+           image_name = c("DMSO-image", "30uM7738-image"), 
+           point_size = 1, 
+           point_alpha = 0.5,
+           save_param = base_save_parameters)
+print(SpatialTrans_combined_ONTtrans_inTissue)
+```
+
+12.8 Analyzing joined objects
+12.8.1 Normalization and adding statistics
+
+```{r}
+
+# subset on in-tissue spots
+metadata <- pDataDT(SpatialTrans_combined_ONTtrans )
+in_tissue_barcodes <- metadata[in_tissue == 1]$cell_ID
+SpatialTrans_combined_ONTtrans  <- subsetGiotto(SpatialTrans_combined_ONTtrans , 
+                              cell_ids = in_tissue_barcodes)
+
+## filter
+SpatialTrans_combined_ONTtrans  <- filterGiotto(gobject = SpatialTrans_combined_ONTtrans ,
+                              expression_threshold = 1,
+                              feat_det_in_min_cells = 4,
+                              min_det_feats_per_cell = 100,
+                              expression_values = "raw",
+                              verbose = TRUE)
+
+## normalize
+SpatialTrans_combined_ONTtrans  <- normalizeGiotto(gobject = SpatialTrans_combined_ONTtrans , 
+                                 scalefactor = 6000)
+
+## add gene & cell statistics
+SpatialTrans_combined_ONTtrans  <- addStatistics(gobject = SpatialTrans_combined_ONTtrans , 
+                               expression_values = "raw")
+
+## visualize
+SpatialTrans_combined_ONTtrans_fil <- spatPlot2D(gobject = SpatialTrans_combined_ONTtrans, 
+           cell_color = "nr_feats", 
+           color_as_factor = FALSE, 
+           point_size = 3, 
+           show_image = TRUE, 
+           image_name = c("DMSO-image","30uM7738-image"),
+           show_plot = TRUE,
+           save_param = base_save_parameters)
+print(SpatialTrans_combined_ONTtrans_fil)
+```
+
+
+```{r}
+
+gene_metadata <- fDataDT(SpatialTrans_combined_ONTtrans)
+testfeats <- gene_metadata[perc_cells > 20 & perc_cells < 50][100:110]$feat_ID
+
+violinPlot(SpatialTrans_combined_ONTtrans, 
+           feats = testfeats, 
+           cluster_column = "list_ID")
+
+
+```
+
+# Clustering the datasets
+
+```{r}
+
+## PCA ##
+SpatialTrans_combined_ONTtrans  <- calculateHVF(gobject = SpatialTrans_combined_ONTtrans )
+
+SpatialTrans_combined_ONTtrans  <- runPCA(gobject = SpatialTrans_combined_ONTtrans , 
+                        center = TRUE, 
+                        scale_unit = TRUE)
+
+## cluster and run UMAP ##
+# sNN network (default)
+SpatialTrans_combined_ONTtrans  <- createNearestNetwork(gobject = SpatialTrans_combined_ONTtrans ,
+                                      dim_reduction_to_use = "pca", 
+                                      dim_reduction_name = "pca",
+                                      dimensions_to_use = 1:10, 
+                                      k = 15)
+
+# Leiden clustering
+SpatialTrans_combined_ONTtrans  <- doLeidenCluster(gobject = SpatialTrans_combined_ONTtrans , 
+                                 resolution = 0.2,
+                                 n_iterations = 200)
+
+# UMAP
+SpatialTrans_combined_ONTtrans  <- runUMAP(SpatialTrans_combined_ONTtrans )
+
+```
+
+```{r}
+spatDimPlot2D(gobject = SpatialTrans_combined_ONTtrans,
+              cell_color = "leiden_clus", 
+              show_image = TRUE, 
+              image_name = c("DMSO-image", "30uM7738-image"),
+              save_param = base_save_parameters,
+              return_plot =TRUE)
+
+```
+
+# Perform Harmony and default workflows
+
+```{r}
+library(harmony)
+
+## run harmony integration
+SpatialTrans_combined_ONTtrans  <- runGiottoHarmony(SpatialTrans_combined_ONTtrans , 
+                                  vars_use = "list_ID",
+                                  do_pca = FALSE,
+                                  sigma = 0.1,
+                                  theta = 2,
+                                  lambda = 1,
+                                  nclust = NULL)
+
+```
+
+# 12.9.1 Clustering harmonized object
+
+```{r}
+## sNN network (default)
+SpatialTrans_combined_ONTtrans  <- createNearestNetwork(gobject = SpatialTrans_combined_ONTtrans ,
+                                      dim_reduction_to_use = "harmony",
+                                      dim_reduction_name = "harmony", 
+                                      name = "NN.harmony",
+                                      dimensions_to_use = 1:10, 
+                                      k = 15)
+
+## Leiden clustering
+SpatialTrans_combined_ONTtrans  <- doLeidenCluster(gobject = SpatialTrans_combined_ONTtrans ,
+                                 network_name = "NN.harmony", 
+                                 resolution = 0.2, 
+                                 n_iterations = 1000, 
+                                 name = "leiden_harmony")
+
+# UMAP dimension reduction
+SpatialTrans_combined_ONTtrans  <- runUMAP(SpatialTrans_combined_ONTtrans , 
+                         dim_reduction_name = "harmony", 
+                         dim_reduction_to_use = "harmony", 
+                         name = "umap_harmony")
+
+spatDimPlot2D(gobject = SpatialTrans_combined_ONTtrans ,
+              dim_reduction_to_use = "umap", 
+              dim_reduction_name = "umap_harmony",
+              cell_color = "leiden_harmony", 
+              #show_image = TRUE, 
+              image_name = c("DMSO-image",  "30uM7738-image"),
+              spat_point_size = 1, 
+              save_param = base_save_parameters)
+```
+
+# Vizualizing the tissue contribution
+
+```{r}
+
+spatDimPlot2D(gobject = SpatialTrans_combined_ONTtrans ,
+              dim_reduction_to_use = "umap", 
+              dim_reduction_name = "umap_harmony",
+              cell_color = "list_ID", 
+              save_plot = TRUE,
+              save_param = base_save_parameters)
+```
+
+# PseudoBulk Differential Expression Analysis
+Calculate the top genes expressed within each region, then provide the result to compare polygons
+
+```{r}
+library(data.table)
+
+scran_results <- findMarkers_one_vs_all(
+  SpatialTrans_combined_ONTtrans,
+  spat_unit = "cell",
+  feat_type = "rna",
+  method = "scran",
+  expression_values = "normalized",
+  cluster_column = "list_ID",
+  min_feats = 2)
+
+top_genes <- scran_results[, head(.SD, 20), by = "cluster"]$feats
+# Define the file path for saving
+
+# Define the new save directory
+supplementary_figures <- "./figures/paper_figures/supplementary"
+scran_markers_file <- file.path(supplementary_figures, "normilized_PseudoBulk_DE_DMSOvsNUC7738_trans_scran.csv")
+
+# Save scran_markers as a CSV file
+fwrite(
+  scran_results ,
+  file = scran_markers_file
+)
+
+View(scran_results )
+#comparePolygonExpression(SpatialTrans_combined_ONTtrans,
+#                         selected_feats = top_genes)
+                    
+
+```
+
+```{r}
+# Define the save parameters
+base_save_parameters <- list(
+  save_dir = results_folder,  # Directory where the plots will be saved
+  save_format = "png",        # Save as PNG format
+  units = "in",               # Units for width and height (inches)
+  base_width = 4,             # Width of the plot
+  base_height = 20,            # Height of the plot
+  dpi = 600                   # Resolution (DPI)
+)
+
+```
+
+#
+```{r}
+# Define the list of top genes
+custom_feats <- c(
+  "ENST00000646664","ENST00000009530", "ENST00000398752", "ENST00000394936", 
+  "ENST00000636580", "ENST00000361453"
+)
+```
+# Print the list to confirm
+print(custom_feats)
+
+```{r}
+violinPlot( SpatialTrans_combined_ONTtrans, 
+           feats = custom_feats, 
+           cluster_column = "list_ID",
+           save_param = base_save_parameters)
+```
+
+```{r}
+plotMetaDataHeatmap(SpatialTrans_combined_ONTtrans, 
+                    selected_feats = top_genes , 
+                    metadata_cols = "list_ID",
+                    save_param = modifyList(base_save_parameters, list(base_width = 5, base_height = 20))
+                    )
+
+```
+
+# Use the spatPlot arguments to isolate and plot each region.
+```{r}
+spatPlot2D(SpatialTrans_combined_ONTtrans,
+           cell_color = "leiden_clus",
+           group_by = "list_ID",
+           point_size = 2,
+           show_legend = FALSE,
+           return_plot = TRUE,
+           save_param = modifyList(base_save_parameters, list(base_width = 10, base_height = 8))
+           )
+```
+
+
+```{r}
+# Define the save parameters
+base_save_parameters <- list(
+  save_dir = results_folder,  # Directory where the plots will be saved
+  save_format = "png",        # Save as PNG format
+  units = "in",               # Units for width and height (inches)
+  base_width = 10,             # Width of the plot
+  base_height = 10,            # Height of the plot
+  dpi = 600                   # Resolution (DPI)
+)
+
+```
+
+```{r}
+genes <- c("ENST00000646664","ENST00000009530", "ENST00000398752", "ENST00000394936", 
+  "ENST00000636580", "ENST00000361453")
+DMSOvsNUC7738_genes <- spatFeatPlot2D(SpatialTrans_combined_ONTtrans,
+               expression_values = "scaled",
+               #group_by = "list_ID", # Use if comparing/grouping within sample
+               feats = genes ,
+               point_size = 1,
+               point_alpha = 0.7,
+               show_image = TRUE,
+               cow_n_col = 2,
+               gradient_midpoint = 0,
+               image_name = c("DMSO-image", "30uM7738-image"),
+               save_param = modifyList(base_save_parameters, list(base_width = 10, base_height = 8)),
+               default_save_name = "DMSOvsNUC7738_genes")
+
+# Save the combined grid as an image
+combined_save_path <- "./figures/paper_figures/supplementary/figure_4_wholesection_trans.png"
+ggsave(
+  filename = combined_save_path,
+  plot = DMSOvsNUC7738_genes,
+  width = 10,  # Adjust dimensions as needed
+  height = 8, 
+  dpi = 600
+)
+
+print(DMSOvsNUC7738_genes)
+
+```
+
+# Save the Object and Load Object
+```{r}
+saveGiotto(SpatialTrans_combined_ONTtrans, "./GiottoSuite_combined_ONTtrans", overwrite = TRUE)
+
+```
+
+# Load Giotto Object
+
+```{r}
+SpatialTrans_combined_ONTtrans<- loadGiotto("./GiottoSuite_combined_ONTtrans")
+```
+
+```{r}
+DMSOvsNUC7738_genes <- spatFeatPlot2D(SpatialTrans_combined_ONTtrans,
+               expression_values = "scaled",
+               #group_by = "list_ID", # Use if comparing/grouping within sample
+               feats = "SNHG25" ,
+               point_size = 1,
+               point_alpha = 0.7,
+               show_image = TRUE,
+               #cow_n_col = 2,
+               #image_name = c("DMSO-image", "30uM7738-image"),
+               #save_param = modifyList(base_save_parameters, list(base_width = 10, base_height = 8)),
+               default_save_name = "DMSOvsNUC7738_genes")
+print(DMSOvsNUC7738_genes)
+```
+
+
+```{r}
+# Loop through each feature in custom_feats
+for (feat in custom_feats) {
+  
+  # Construct the save name dynamically based on the feature name
+  save_name <- paste0("Combo_", feat)
+  
+  # Run the spatFeatPlot2D function for the current feature
+  spatFeatPlot2D(
+    SpatialTrans_combined_ONTtrans,
+    expression_values = "scaled",
+    feats = feat,  # Use the current feature
+    point_size = 2,
+    point_alpha = 0.7,
+    show_image = TRUE,
+    gradient_midpoint = 0,
+    image_name = c("DMSO-image", "30uM7738-image"),
+    save_param = base_save_parameters,  # Use the predefined save parameters
+    default_save_name = save_name  # Use the dynamically constructed save name
+  )
+}
+```
+
+# DRIMSeq analysis
+# Create Sample
+
+```{r}
+# Extract cell metadata
+cell_metadata <- pDataDT(SpatialTrans_combined_ONTtrans)
+samples_df <- data.frame(
+  sample_id = cell_metadata$cell_ID,
+  condition = cell_metadata$list_ID,
+  stringsAsFactors = FALSE
+)
+samples_df$condition <- factor(samples_df$condition)
+head(samples_df)
+```
+
+
+# Step 1 Extract normalized counts from Giotto
+
+```{r}
+cts_giotto <- getExpression(SpatialTrans_combined_ONTtrans, values = "normalized")
+# Extract the expression matrix (transcripts x cells)
+cts_sparse <- cts_giotto@exprMat
+
+# Convert the sparse matrix to a regular matrix
+cts_mat <- as.matrix(cts_sparse)
+
+# At this point, cts_mat is a standard R matrix with transcripts as rows and cells as columns.
+# The rownames are transcript IDs, and the colnames are cell IDs.
+
+# Convert the matrix to a data frame if desired
+cts_df <- as.data.frame(cts_mat)
+
+```
+
+# Get tx2gene mapping for annotation 
+```{r}
+library(GenomicFeatures)
+library(rtracklayer)
+library(dplyr)
+gtf_path <- "./References/gencode.v47.primary_assembly.annotation.gtf.gz"
+
+
+txdb <- makeTxDbFromGFF(gtf_path)
+txdf <- select(txdb, keys(txdb, "GENEID"), "TXNAME", "GENEID")
+txdf$GENEID <- sub("\\..*", "", txdf$GENEID)
+txdf$TXNAME <- sub("\\..*", "", txdf$TXNAME)
+
+```
+
+```{r}
+txdf <- txdf[txdf$TXNAME %in% rownames(cts_df), ]
+
+cts_df <- cts_df[rownames(cts_df) %in% txdf$TXNAME, ]
+txdf <- txdf[match(rownames(cts_df),txdf$TXNAME),]
+all(rownames(cts_df) == txdf$TXNAME)
+```
+
+
+# Step 4 Build counts for DRIMseq
+
+
+In order to run DRIMSeq, we build a data.frame with the gene ID, the feature (transcript) ID, and then columns for each of the samples:
+
+```{r}
+counts <- data.frame(
+  gene_id = txdf$GENEID,
+  feature_id = txdf$TXNAME,
+  cts_df,
+  check.names = FALSE
+)
+```
+
+```{r}
+library(DRIMSeq)
+d <- dmDSdata(counts=counts, samples=samples_df)
+d
+```
+
+
+```{r}
+design_full <- model.matrix(~condition, data=DRIMSeq::samples(d))
+colnames(design_full)
+
+
+```
+
+```{r}
+ d <- dmPrecision(d, design=design_full)
+ d <- dmFit(d, design=design_full)
+
+```
+
+
+```{r}
+d <- dmTest(d, coef="conditionDMSO")
+
+res <- DRIMSeq::results(d)
+head(res)
+
+res.txp <- DRIMSeq::results(d, level="feature")
+head(res.txp)
+```
+
+```{r}
+library(biomaRt)
+
+# Connect to the Ensembl database (human in this example)
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+genes <- unique(res.txp$gene_id)
+
+gene_mapping <- getBM(
+  attributes = c("ensembl_gene_id", "external_gene_name"),
+  filters = "ensembl_gene_id",
+  values = genes,
+  mart = mart
+)
+
+res.txp <- merge(res.txp, gene_mapping,
+                 by.x = "gene_id",   # Column in res.txp
+                 by.y = "ensembl_gene_id", # Column in gene_mapping
+                 all.x = TRUE)       # Keep all rows from res.txp
+
+res.txp <- res.txp[order(res.txp$pvalue), ]
+
+# Define the new save directory
+supplementary_figures <- "./figures/paper_figures/supplementary"
+# Define the file path for saving
+DRIMseq_DMSOvsNUC7738 <- file.path(supplementary_figures, "Supplementary Table S4.csv")
+
+# Save scran_markers as a CSV file
+fwrite(
+  res.txp,
+  file = DRIMseq_DMSOvsNUC7738
+)
+
+View(res.txp)
+```
+
+
+Plot Spatially
+
+```{r}
+# Ensure necessary libraries are loaded
+library(ggplot2)
+library(patchwork)  # For arranging plots in a grid
+library(dplyr)      # For data manipulation
+
+# Function to generate spatial correlation plot for any given feature_id
+generate_spatial_corr_plot <- function(transcript_id) {
+  
+  # Generate the spatial feature plot for the input transcript ID
+  plot <- spatFeatPlot2D(
+    SpatialTrans_combined_ONTtrans, 
+    expression_values = "normalized",
+    feats = transcript_id,             # Directly use the input transcript ID
+    point_size = 4,                    # Set point size
+    point_alpha = 0.7,                 # Set point transparency
+    show_image = TRUE,                 # Show the underlying image
+    cell_color_gradient = c("#ffffff", "#fb0000"),  # Gradient from white to red
+    save_plot = FALSE,                 # Do not save individual plots
+    return_plot = TRUE                 # Return the plot object for display
+  )
+  
+  return(plot)
+}
+
+# Function to plot multiple transcripts for a given external_gene_name
+plot_multiple_transcripts <- function(gene_name) {
+  
+  # Step 1: Filter for the given external_gene_name in res.txp
+  gene_data <- res.txp %>%
+    dplyr::filter(external_gene_name == gene_name)  # Filter based on gene name
+  
+  # Step 2: Extract the associated feature_id (transcript IDs) and ensure they are unique
+  transcript_ids <- unique(gene_data$feature_id)  # Extract unique transcript IDs
+  
+  # Step 3: Check if there are any transcript IDs to plot
+  if (length(transcript_ids) == 0) {
+    stop(paste("No transcripts found for gene:", gene_name))
+  }
+  
+  # Step 4: Generate spatial plots for each transcript
+  plot_list <- lapply(transcript_ids, function(transcript_id) {
+    generate_spatial_corr_plot(transcript_id)
+  })
+  
+  # Step 5: Combine all plots into a grid using patchwork
+  combined_plot <- wrap_plots(plot_list) +
+    plot_annotation(
+      title = paste("Normalized expression of", gene_name, "Isoforms in ccRCC tumoroids"),  # Custom title
+      theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14))  # Center and bold title
+    )
+  
+  # Step 6: Define the save path
+  save_dir <- "./results/Giotto_Combo_results/ONTtranscripts"
+  if (!dir.exists(save_dir)) {
+    dir.create(save_dir, recursive = TRUE)  # Create the directory if it doesn't exist
+  }
+  
+  # Step 7: Save the combined plot as both PNG and PDF with 600 dpi
+  file_name <- paste0(save_dir, "/Spatial_normalized_", gene_name)
+  
+  # Save as PNG
+  ggsave(filename = paste0(file_name, ".png"), plot = combined_plot, dpi = 600, width = 10, height = 8, units = "in")
+  
+  # Save as PDF
+  ggsave(filename = paste0(file_name, ".pdf"), plot = combined_plot, dpi = 600, width = 10, height = 8, units = "in")
+  
+  # Return or display the combined plot
+  print(combined_plot)
+  
+  return(combined_plot)
+}
+
+# Example usage: Plot spatially all unique transcripts associated with the gene "ASAH1"
+plot_multiple_transcripts("EGFR")
+
+
+```
+
+Print Transcript_Id
+
+```{r}
+res.txp %>%
+  filter(external_gene_name == "CD74", adj_pvalue < 0.05) %>% 
+  pull(feature_id) %>%
+  print()
+
+```
+
+
+
+# Spatial Plotting
+# Subset and plots using modified `spatInSituPlotPoints`
+```{r}
+spatinsitu_feat_workaround <- function(
+        gobject, feat, 
+        expression_values = "scaled", 
+        spat_unit = NULL, 
+        feat_type = NULL, 
+        ...) {
+    expr_table <- spatValues(gobject,
+                             spat_unit = spat_unit, 
+                             feat_type = feat_type,
+                             expression_values = expression_values,
+                             feats = feat)
+    gobject <- addCellMetadata(gobject,
+                               spat_unit = spat_unit,
+                               feat_type = feat_type,
+                               new_metadata = expr_table,
+                               by_column = TRUE)
+    p <- list(
+        gobject = gobject,
+        polygon_fill = feat,
+        ...
+    )
+    do.call(spatInSituPlotPoints, p)
+}
+```
+
+
+```{r}
+# Load necessary libraries
+library(GenomicFeatures)
+library(Gviz)
+
+# Set the option to allow arbitrary chromosome names (non-UCSC style)
+options(ucscChromosomeNames = FALSE)
+
+# Create TxDb object from Ensembl (release 111)
+
+txdb_ensembl <- makeTxDbFromEnsembl("Homo sapiens", release = 111)
+```
+
+
+Spatial plots with transcript strucuter
+
+```{r}
+# Required Libraries
+library(ggplot2)
+library(cowplot)
+library(ggtranscript)
+library(dplyr)
+library(GenomicFeatures)
+
+# Function to get transcripts for a gene
+get_transcripts <- function(gene_name, res.txp) {
+  res.txp %>%
+    filter(external_gene_name == gene_name, adj_pvalue < 0.05) %>% 
+    pull(feature_id)
+}
+
+# Define the gene name
+gene_name <- "UQCRQ"  # Replace with your desired gene name
+
+# Get transcripts
+genes <- get_transcripts(gene_name, res.txp)
+
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Function to generate spatial plot for a given gene and coordinates
+create_spatial_plot <- function(giotto_obj, gene, image_name, xlim, ylim, x_right, y_bottom, is_first_column = FALSE, is_second_row = FALSE, show_title = TRUE) {
+  p <- spatinsitu_feat_workaround(
+    giotto_obj, 
+    feat = c(gene),
+    show_image = TRUE, 
+    image_name = image_name,
+    return_plot = TRUE,
+    save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),
+    save_plot = FALSE,
+    polygon_alpha = 0.7,
+    polygon_line_size = 0.1,
+    polygon_color = "#333030",
+    background_color = "white", 
+    xlim = xlim, 
+    ylim = ylim
+  ) +
+    ggplot2::theme(
+      axis.line = ggplot2::element_line(color = "black"),
+      axis.title.x = ggplot2::element_text(size = 10),
+      axis.title.y = ggplot2::element_text(size = 10),
+      plot.title = element_text(hjust = 0.5, size = 22)
+    ) +
+    ggplot2::labs(
+      x = "x coordinates",
+      y = "y coordinates",
+      title = if(show_title) gene else NULL
+    ) +
+    ggplot2::annotate(
+      "segment",
+      x = x_right,
+      xend = x_right + scale_bar_length_pixels,
+      y = y_bottom + 110,
+      yend = y_bottom + 110,
+      color = "black",
+      linewidth = 0.8,
+      lineend = "round"
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = x_right + scale_bar_length_pixels / 2,
+      y = y_bottom - 20,
+      label = paste0(scale_bar_length_microns, " µm"),
+      color = "black",
+      size = 6,
+      hjust = 0.5
+    )
+  
+  return(p)
+}
+
+# Function to generate isoform plot
+generate_isoform_plot <- function(genes, txdb) {
+  isoform_plots <- list()
+  
+  for (gene in genes) {
+    transcript_exons <- exonsBy(txdb, by = "tx", use.names = TRUE)
+    specific_exons <- transcript_exons[[which(names(transcript_exons) == gene)]]
+
+    exon_df <- as.data.frame(specific_exons) %>%
+      dplyr::mutate(transcript_name = "", type = "exon")
+
+    isoform_plot <- ggplot(exon_df, aes(xstart = start, xend = end, y = transcript_name)) +
+      geom_range(fill = "steelblue", color = "black", alpha = 0.7) +
+      geom_intron(
+        data = to_intron(exon_df, "transcript_name"),
+        aes(strand = strand),
+        arrow.min.length = unit(0.05, "npc"),
+        arrow = grid::arrow(angle = 30, length = unit(0.1, "inches"))
+      ) +
+      theme_minimal() +
+      theme(
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_blank()
+      ) +
+      labs(
+        x = "Genomic Coordinates",
+        y = ""
+      )
+    
+    isoform_plots[[gene]] <- isoform_plot
+  }
+  
+  # Combine isoform plots side by side
+  combined_isoform_plot <- plot_grid(
+    plotlist = isoform_plots, 
+    ncol = length(genes)
+  )
+  
+  return(combined_isoform_plot)
+}
+
+# Generate labels for rows
+row_labels <- function(label_text) {
+  ggplot() +
+    ggplot2::annotate("text", x = 0.5, y = 0.5, label = label_text, size = 8, fontface = "bold", angle = 90) +
+    theme_void()
+}
+
+# Lists to store plots
+gene_plots <- list()
+
+# Generate plots for each gene
+for (i in seq_along(genes)) {
+  gene <- genes[i]
+  
+  # DMSO spatial plot
+  dmso_plot <- create_spatial_plot(
+    SpatialTrans_combined_ONTtrans, 
+    gene, 
+    "DMSO-image", 
+    xlim = c(13600, 22000), 
+    ylim = c(-17200, -13800), 
+    x_right = 22000 - scale_bar_length_pixels - 20, 
+    y_bottom = -17200 + 80,
+    is_first_column = (i == 1),
+    show_title = TRUE
+  )
+  
+  # NUC7738 spatial plot
+  nuc_plot <- create_spatial_plot(
+    SpatialTrans_combined_ONTtrans, 
+    gene, 
+    "30uM7738-image", 
+    xlim = c(40900, 49900), 
+    ylim = c(-25200, -21500), 
+    x_right = 49900 - scale_bar_length_pixels - 20, 
+    y_bottom = -25200 + 80,
+    is_second_row = TRUE,
+    show_title = FALSE
+  )
+
+  # For the first gene only, add vertical labels
+  if (i == 1) {
+    combined_plot <- plot_grid(
+      row_labels("Control (DMSO)"), dmso_plot,
+      row_labels("NUC-7738"), nuc_plot,
+      ncol = 2, 
+      rel_widths = c(0.05, 1)
+    )
+  } else {
+    # For subsequent genes, skip vertical labels
+    combined_plot <- plot_grid(
+      NULL, dmso_plot,
+      NULL, nuc_plot,
+      ncol = 2, 
+      rel_widths = c(0.05, 1)
+    )
+  }
+
+  gene_plots[[gene]] <- combined_plot
+}
+
+# Combine all gene plots side by side
+final_combined_plot <- plot_grid(
+  plotlist = gene_plots, 
+  ncol = length(genes)
+)
+
+# Generate isoform plot separately
+isoform_plot <- generate_isoform_plot(genes, txdb_ensembl)
+
+# Final layout with spatial plots and isoform plot
+complete_plot <- plot_grid(
+  final_combined_plot,
+  isoform_plot,
+  ncol = 1,
+  rel_heights = c(4, 1),
+  labels = c(paste0(gene_name, " Isoform Expression"), NULL),
+  label_size = 22,
+  hjust = -2.6  # Center the title
+)
+
+# Save the combined grid as an image with gene name in filename
+ggsave(
+  filename = paste0("./figures/paper_figures/supplementary/figure_5_combined_DMSO_NUC7738_", gene_name, "_isoform.png"),
+  plot = complete_plot,
+  width = 25,  # Adjust dimensions as needed
+  height = 15, 
+  dpi = 600,
+  units = "in"
+)
+
+# Print the final combined grid
+print(complete_plot)
+
+```
+
+
+
+# Add labelling to plot 
+
+```{r}
+# Required Libraries
+library(ggplot2)
+library(cowplot)
+library(ggtranscript)
+library(dplyr)
+library(GenomicFeatures)
+library(grid)
+
+# Function to get transcripts for a gene
+get_transcripts <- function(gene_name, res.txp) {
+  res.txp %>%
+    filter(external_gene_name == gene_name, adj_pvalue < 0.05) %>% 
+    pull(feature_id)
+}
+
+# Define the gene name
+gene_name <- "UQCRQ"
+
+# Get transcripts
+genes <- get_transcripts(gene_name, res.txp)
+
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Function to generate spatial plot for a given gene and coordinates
+create_spatial_plot <- function(giotto_obj, gene, image_name, xlim, ylim, x_right, y_bottom, is_first_column = FALSE, is_second_row = FALSE, show_title = TRUE) {
+  p <- spatinsitu_feat_workaround(
+    giotto_obj, 
+    feat = c(gene),
+    show_image = TRUE, 
+    image_name = image_name,
+    return_plot = TRUE,
+    save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),
+    save_plot = FALSE,
+    polygon_alpha = 0.7,
+    polygon_line_size = 0.1,
+    polygon_color = "#333030",
+    background_color = "white", 
+    xlim = xlim, 
+    ylim = ylim
+  ) +
+    ggplot2::theme(
+      axis.line = ggplot2::element_line(color = "black"),
+      axis.title.x = ggplot2::element_text(size = 10),
+      axis.title.y = ggplot2::element_text(size = 10),
+      plot.title = element_text(hjust = 0.5, size = 22)
+    ) +
+    ggplot2::labs(
+      x = "x coordinates",
+      y = "y coordinates",
+      title = if(show_title) gene else NULL
+    ) +
+    ggplot2::annotate(
+      "segment",
+      x = x_right,
+      xend = x_right + scale_bar_length_pixels,
+      y = y_bottom + 110,
+      yend = y_bottom + 110,
+      color = "black",
+      linewidth = 0.8,
+      lineend = "round"
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = x_right + scale_bar_length_pixels / 2,
+      y = y_bottom - 20,
+      label = paste0(scale_bar_length_microns, " µm"),
+      color = "black",
+      size = 6,
+      hjust = 0.5
+    )
+  
+  return(p)
+}
+
+# Function to generate isoform plot
+generate_isoform_plot <- function(genes, txdb) {
+  isoform_plots <- list()
+  
+  for (gene in genes) {
+    transcript_exons <- exonsBy(txdb, by = "tx", use.names = TRUE)
+    specific_exons <- transcript_exons[[which(names(transcript_exons) == gene)]]
+
+    exon_df <- as.data.frame(specific_exons) %>%
+      dplyr::mutate(transcript_name = "", type = "exon")
+
+    isoform_plot <- ggplot(exon_df, aes(xstart = start, xend = end, y = transcript_name)) +
+      geom_range(fill = "steelblue", color = "black", alpha = 0.7) +
+      geom_intron(
+        data = to_intron(exon_df, "transcript_name"),
+        aes(strand = strand),
+        arrow.min.length = unit(0.05, "npc"),
+        arrow = grid::arrow(angle = 30, length = unit(0.1, "inches"))
+      ) +
+      theme_minimal() +
+      theme(
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_blank()
+      ) +
+      labs(
+        x = "Genomic Coordinates",
+        y = ""
+      )
+    
+    isoform_plots[[gene]] <- isoform_plot
+  }
+  
+  combined_isoform_plot <- plot_grid(
+    plotlist = isoform_plots, 
+    ncol = length(genes)
+  )
+  
+  return(combined_isoform_plot)
+}
+
+# Generate labels for rows
+row_labels <- function(label_text) {
+  ggplot() +
+    ggplot2::annotate("text", x = 0.5, y = 0.5, label = label_text, size = 8, fontface = "bold", angle = 90) +
+    theme_void()
+}
+
+# Lists to store plots
+gene_plots <- list()
+
+# Generate plots for each gene
+for (i in seq_along(genes)) {
+  gene <- genes[i]
+  
+  # DMSO spatial plot
+  dmso_plot <- create_spatial_plot(
+    SpatialTrans_combined_ONTtrans, 
+    gene, 
+    "DMSO-image", 
+    xlim = c(13600, 22000), 
+    ylim = c(-17200, -13800), 
+    x_right = 22000 - scale_bar_length_pixels - 20, 
+    y_bottom = -17200 + 80,
+    is_first_column = (i == 1),
+    show_title = TRUE
+  )
+  
+  # NUC7738 spatial plot
+  nuc_plot <- create_spatial_plot(
+    SpatialTrans_combined_ONTtrans, 
+    gene, 
+    "30uM7738-image", 
+    xlim = c(40900, 49900), 
+    ylim = c(-25200, -21500), 
+    x_right = 49900 - scale_bar_length_pixels - 20, 
+    y_bottom = -25200 + 80,
+    is_second_row = TRUE,
+    show_title = FALSE
+  )
+
+  if (i == 1) {
+    combined_plot <- plot_grid(
+      plot_grid(
+        ggdraw() + draw_label("A", x = 0.9, y = 0.02, size = 20, fontface = "bold"),
+        row_labels("Control (DMSO)"),
+        ncol = 1, rel_heights = c(0.2, 3)
+      ), dmso_plot,
+      plot_grid(
+        ggdraw() + draw_label("B", x = 0.9, y = 0.01, size = 20, fontface = "bold"),
+        row_labels("NUC-7738"),
+        ncol = 1, rel_heights = c(0.5, 10)
+      ), nuc_plot,
+      ncol = 2, 
+      rel_widths = c(0.05, 1)
+    )
+  } else {
+    combined_plot <- plot_grid(
+      NULL, dmso_plot,
+      NULL, nuc_plot,
+      ncol = 2, 
+      rel_widths = c(0.05, 1)
+    )
+  }
+
+  gene_plots[[gene]] <- combined_plot
+}
+
+# Combine all gene plots side by side
+final_combined_plot <- plot_grid(
+  plotlist = gene_plots, 
+  ncol = length(genes)
+)
+
+# Add horizontal dashed line
+final_combined_plot <- final_combined_plot + 
+  annotation_custom(
+    grob = linesGrob(
+      x = unit(c(0, 1), "npc"),
+      y = unit(0.5, "npc"),
+      gp = gpar(lty = 2, col = "grey50")
+    )
+  )
+
+# Generate isoform plot
+isoform_plot <- generate_isoform_plot(genes, txdb_ensembl)
+
+# Add C label to isoform plot
+isoform_plot_labeled <- plot_grid(
+  ggdraw() + draw_label("C", x = 0.02, y = 0.9, size = 20, fontface = "bold"),
+  isoform_plot,
+  ncol = 1,
+  rel_heights = c(0.1, 1)
+)
+
+# Final layout
+complete_plot <- plot_grid(
+  final_combined_plot,
+  isoform_plot_labeled,
+  ncol = 1,
+  rel_heights = c(4, 1),
+  labels = c(paste0(gene_name, " Isoform Expression"), NULL),
+  label_size = 22,
+  hjust = -2.6
+)
+
+# Save the plot
+ggsave(
+  filename = paste0("./figures/paper_figures/supplementary/figure_5_combined_DMSO_NUC7738_", gene_name, "_isoform.png"),
+  plot = complete_plot,
+  width = 25,
+  height = 15, 
+  dpi = 600,
+  units = "in"
+)
+
+# Print the final plot
+print(complete_plot)
+
+```
