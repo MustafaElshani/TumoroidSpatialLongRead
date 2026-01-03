@@ -1,0 +1,313 @@
+---
+title: "GLS Transcript Isoform Spatial Visualization"
+author: "Dr Mustafa Elshani"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# GLS Transcript Isoform Spatial Expression
+
+Visualizes GLS (Glutaminase) transcript isoform expression spatially using ONT long-read 
+transcript-level data. GLS has two major isoforms: KGA (ENST00000320717) and GAC (ENST00000338435).
+
+---
+
+# 1. Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+library(Giotto)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(GenomicFeatures)
+library(ggtranscript)
+library(terra)
+library(exifr)
+```
+
+# 2. Configuration
+
+```{r config}
+# Paths
+data_dir_10x_DMSO <- "./DMSO/spaceranger_out_run2/outs"
+giotto_object_path <- "./GiottoSuite_DMSO_ONTtrans/gobject.RDS"
+
+# GLS isoforms
+GLS_TRANSCRIPTS <- c("ENST00000320717", "ENST00000338435")  # KGA, GAC
+GENE_NAME <- "GLS"
+
+# Output
+figure_output_dir <- "./figures/paper_figures"
+supp_output_dir <- "./figures/paper_figures/supplementary"
+```
+
+# 3. Load Data
+
+## 3.1 Load Giotto Object
+
+```{r load-giotto}
+SpatialTrans_DMSO_ONTtrans <- loadGiotto(giotto_object_path)
+```
+
+## 3.2 Calculate Microns Per Pixel
+
+```{r calculate-resolution}
+tiff_file_path <- file.path(data_dir_10x_DMSO, "spatial/tissue_fullres_image.tif")
+metadata <- read_exif(tiff_file_path)
+microns_per_pixel <- 10000 / metadata$XResolution
+print(paste("Microns per pixel:", microns_per_pixel))
+```
+
+# 4. Helper Functions
+
+## 4.1 Spatial Feature Plotting Workaround
+
+```{r helper-spatinsitu}
+spatinsitu_feat_workaround <- function(
+    gobject, feat, 
+    expression_values = "scaled", 
+    spat_unit = NULL, 
+    feat_type = NULL, 
+    ...) {
+  
+  expr_table <- spatValues(gobject,
+                           spat_unit = spat_unit, 
+                           feat_type = feat_type,
+                           expression_values = expression_values,
+                           feats = feat)
+  
+  gobject <- addCellMetadata(gobject,
+                             spat_unit = spat_unit,
+                             feat_type = feat_type,
+                             new_metadata = expr_table,
+                             by_column = TRUE)
+  
+  p <- list(gobject = gobject, polygon_fill = feat, ...)
+  do.call(spatInSituPlotPoints, p)
+}
+```
+
+## 4.2 Spatial Plot Generator
+
+```{r helper-spatial-plot}
+create_spatial_plot <- function(giotto_obj, gene, image_name, 
+                                 xlim, ylim, x_right, y_bottom,
+                                 scale_bar_microns, scale_bar_y_offset = 250,
+                                 color_limits = c(0, 2)) {
+  
+  scale_bar_length_pixels <- scale_bar_microns / microns_per_pixel
+  
+  p <- spatinsitu_feat_workaround(
+    giotto_obj, 
+    feat = gene,
+    show_image = TRUE, 
+    image_name = image_name,
+    return_plot = TRUE,
+    save_plot = FALSE,
+    polygon_alpha = 0.7,
+    polygon_line_size = 0.1,
+    polygon_color = "#333030",
+    background_color = "white", 
+    xlim = xlim, 
+    ylim = ylim
+  ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      axis.line = ggplot2::element_line(color = "black", linewidth = 1.2),
+      axis.title.x = ggplot2::element_text(size = 24),
+      axis.title.y = ggplot2::element_text(size = 24),
+      axis.text.x = ggplot2::element_text(size = 16),
+      axis.text.y = ggplot2::element_text(size = 16, angle = 90, hjust = 0.5),
+      plot.title = ggplot2::element_text(size = 26, face = "bold", hjust = 0.5),
+      legend.title = ggplot2::element_blank(),
+      legend.text = ggplot2::element_text(size = 18),
+      legend.key.size = ggplot2::unit(1.2, "cm")
+    ) +
+    ggplot2::labs(x = "x coordinates", y = "y coordinates", title = gene) +
+    ggplot2::scale_fill_gradient(low = "white", high = "red",
+                                  limits = color_limits,
+                                  oob = scales::squish) +
+    ggplot2::annotate("segment",
+             x = x_right, xend = x_right + scale_bar_length_pixels,
+             y = y_bottom + scale_bar_y_offset, yend = y_bottom + scale_bar_y_offset,
+             color = "black", linewidth = 2, lineend = "round") +
+    ggplot2::annotate("text",
+             x = x_right + scale_bar_length_pixels / 2, y = y_bottom - 20,
+             label = paste0(scale_bar_microns, " µm"),
+             color = "black", size = 6, fontface = "bold", hjust = 0.5)
+  
+  return(p)
+}
+```
+
+## 4.3 Isoform Structure Plot Generator
+
+```{r helper-isoform-plot}
+generate_isoform_plot <- function(transcript_ids, txdb) {
+  
+  isoform_plots <- list()
+  transcript_exons <- exonsBy(txdb, by = "tx", use.names = TRUE)
+  
+  for (tx_id in transcript_ids) {
+    specific_exons <- transcript_exons[[which(names(transcript_exons) == tx_id)]]
+    
+    exon_df <- as.data.frame(specific_exons) %>%
+      mutate(transcript_name = "", type = "exon")
+    
+    isoform_plot <- ggplot(exon_df, aes(xstart = start, xend = end, y = transcript_name)) +
+      geom_range(fill = "steelblue", color = "black", alpha = 0.7) +
+      geom_intron(
+        data = to_intron(exon_df, "transcript_name"),
+        aes(strand = strand),
+        arrow.min.length = unit(0.05, "npc"),
+        arrow = grid::arrow(angle = 30, length = unit(0.1, "inches"))
+      ) +
+      theme_minimal() +
+      theme(
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+      ) +
+      labs(x = "Genomic Coordinates")
+    
+    isoform_plots[[tx_id]] <- isoform_plot
+  }
+  
+  plot_grid(plotlist = isoform_plots, ncol = length(transcript_ids))
+}
+```
+
+# 5. Load Ensembl TxDb
+
+```{r load-txdb, message=FALSE, warning=FALSE}
+options(ucscChromosomeNames = FALSE)
+txdb_ensembl <- makeTxDbFromEnsembl("Homo sapiens", release = 111)
+```
+
+# 6. **Figure 3**: GLS Isoform Spatial Expression (Subset Region)
+
+```{r figure3-subset, fig.width=25, fig.height=7}
+scale_bar_microns_subset <- 150
+scale_bar_pixels_subset <- scale_bar_microns_subset / microns_per_pixel
+
+xlim_subset <- c(13600, 22000)
+ylim_subset <- c(-17200, -13800)
+
+# Generate panel labels (A, B, C, D, ...)
+panel_labels <- LETTERS[seq_along(GLS_TRANSCRIPTS)]
+
+# Spatial plots for each isoform with panel labels
+spatial_plots_subset <- lapply(seq_along(GLS_TRANSCRIPTS), function(i) {
+  tx <- GLS_TRANSCRIPTS[i]
+  p <- create_spatial_plot(
+    giotto_obj = SpatialTrans_DMSO_ONTtrans,
+    gene = tx, 
+    image_name = "image", 
+    xlim = xlim_subset, 
+    ylim = ylim_subset, 
+    x_right = xlim_subset[2] - scale_bar_pixels_subset - 20, 
+    y_bottom = ylim_subset[1] + 80,
+    scale_bar_microns = scale_bar_microns_subset,
+    scale_bar_y_offset = 250
+  )
+  return(p)
+})
+
+# Combine spatial plots with panel labels
+spatial_grid_subset <- plot_grid(
+  plotlist = spatial_plots_subset, 
+  ncol = length(GLS_TRANSCRIPTS),
+  labels = panel_labels,
+  label_size = 28,
+  label_fontface = "bold"
+)
+
+# Isoform structure
+isoform_plot_subset <- generate_isoform_plot(GLS_TRANSCRIPTS, txdb_ensembl)
+
+# Combined figure
+figure3_plot <- plot_grid(
+  spatial_grid_subset,
+  isoform_plot_subset,
+  ncol = 1,
+  rel_heights = c(4, 1)
+)
+
+ggsave(
+  filename = file.path(figure_output_dir, paste0("figure_3_DMSO_", GENE_NAME, ".png")),
+  plot = figure3_plot,
+  width = 25, height = 7, dpi = 600, units = "in"
+)
+
+ggsave(
+  filename = file.path(figure_output_dir, paste0("figure_3_DMSO_", GENE_NAME, ".pdf")),
+  plot = figure3_plot,
+  width = 25, height = 6.5, units = "in"
+)
+
+print(figure3_plot)
+```
+
+# 7. Supplementary: GLS Isoform Expression (Whole Section)
+
+```{r supp-whole-section, fig.width=25, fig.height=15}
+scale_bar_microns_whole <- 250
+scale_bar_pixels_whole <- scale_bar_microns_whole / microns_per_pixel
+
+xlim_whole <- c(13600, 25000)
+ylim_whole <- c(-25000, -8500)
+
+# Generate panel labels (A, B, C, D, ...)
+panel_labels_whole <- LETTERS[seq_along(GLS_TRANSCRIPTS)]
+
+# Spatial plots for whole section with panel labels
+spatial_plots_whole <- lapply(seq_along(GLS_TRANSCRIPTS), function(i) {
+  tx <- GLS_TRANSCRIPTS[i]
+  p <- create_spatial_plot(
+    giotto_obj = SpatialTrans_DMSO_ONTtrans,
+    gene = tx, 
+    image_name = "image", 
+    xlim = xlim_whole, 
+    ylim = ylim_whole, 
+    x_right = 24000 - scale_bar_pixels_whole - 20, 
+    y_bottom = ylim_whole[1] + 80,
+    scale_bar_microns = scale_bar_microns_whole,
+    scale_bar_y_offset = 400
+  )
+  return(p)
+})
+
+# Combine spatial plots with panel labels
+spatial_grid_whole <- plot_grid(
+  plotlist = spatial_plots_whole, 
+  ncol = length(GLS_TRANSCRIPTS),
+  labels = panel_labels_whole,
+  label_size = 28,
+  label_fontface = "bold"
+)
+
+# Isoform structure
+isoform_plot_whole <- generate_isoform_plot(GLS_TRANSCRIPTS, txdb_ensembl)
+
+# Combined supplementary figure
+supp_plot <- plot_grid(
+  spatial_grid_whole,
+  isoform_plot_whole,
+  ncol = 1,
+  rel_heights = c(4, 1)
+)
+
+ggsave(
+  filename = file.path(supp_output_dir, paste0("figure_3_DMSO_", GENE_NAME, "_wholesection.png")),
+  plot = supp_plot,
+  width = 25, height = 15, dpi = 600, units = "in"
+)
+
+print(supp_plot)
+```
+
+# 8. Session Info
+
+```{r session-info}
+sessionInfo()
+```

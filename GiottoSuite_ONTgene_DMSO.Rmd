@@ -1,0 +1,1905 @@
+# Start libraries
+
+```{r setup, message=FALSE, warning=FALSE, echo=TRUE, eval=T, fig.height=4, fig.width=6}
+# Load necessary libraries
+library(Giotto)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(RColorBrewer)
+library(terra)
+library(exifr)
+```
+
+# Step 1: Load Full-Resolution Image and Extract Metadata
+
+```{r step1_load_image}
+
+# Load the full-resolution TIFF image using terra
+data_dir_10x_DMSO <- "./DMSO/spaceranger_out_run2/outs"
+fullres_image_path <- file.path(data_dir_10x_DMSO, "spatial/tissue_fullres_image.tif")
+fullres_image <- rast(fullres_image_path)
+
+# Extract metadata from the TIFF file using exifr
+tiff_file_path <- file.path(data_dir_10x_DMSO, "spatial/tissue_fullres_image.tif")
+metadata <- read_exif(tiff_file_path)
+
+# Extract relevant fields: XResolution, YResolution, and ResolutionUnit
+resolution_data <- metadata[, c("XResolution", "YResolution", "ResolutionUnit")]
+microns_per_pixel <- 10000 / resolution_data$XResolution  # Convert pixels per cm to microns per pixel
+print(paste("Microns per pixel:", microns_per_pixel))
+
+# Check the original dimensions of the full-resolution image
+fullres_dims <- dim(fullres_image)[1:2]
+print(fullres_dims)
+```
+
+# Step 2: Downsample Image and Calculate Scaling Factor
+
+```{r step2_downsample_image}
+# Load the necessary library to read and write JSON files
+library(jsonlite)
+
+# Downsample the image using terra
+downsample_factor <- 5 # Adjust as needed
+fullres_image_downsampled <- aggregate(fullres_image, fact = downsample_factor)
+
+# Flip the image vertically to correct orientation (terra uses bottom-left origin, PNG uses top-left)
+fullres_image_downsampled <- terra::flip(fullres_image_downsampled, direction = "vertical")
+
+# Save the downsampled image as a PNG
+png_image_path <- file.path(data_dir_10x_DMSO, "spatial/tissue_hires_image.png")
+writeRaster(fullres_image_downsampled, filename = png_image_path, overwrite = TRUE)
+
+# Calculate the new hires scaling factor
+new_hires_scale <- dim(fullres_image_downsampled)[1] / fullres_dims[1]
+print(paste("New hires scale factor:", new_hires_scale))
+
+# Load the original scalefactors_json.json
+scalefactor_json_path <- file.path(data_dir_10x_DMSO, "spatial/scalefactors_json.json")
+scalefactors <- fromJSON(scalefactor_json_path)
+
+# Ensure all elements are numeric, and update the hires scale factor
+scalefactors$tissue_hires_scalef <- as.numeric(new_hires_scale)
+
+# Optionally, print the updated scalefactors to verify
+print(scalefactors)
+
+# Write the updated JSON back to the file with correct structure
+write_json(scalefactors, scalefactor_json_path, pretty = TRUE, auto_unbox = TRUE)
+
+# Verify the updated JSON file
+print(paste("Updated scalefactors written to:", scalefactor_json_path))
+
+```
+
+# Step 3: Create Giotto Object and Load Visium Data
+
+createGiottoVisiumObject() will look for the standardized files organization from the visium technology in the data folder and will automatically load the expression and spatial information to create the Giotto object.
+
+```{r step3_create_giotto_object}
+
+# Set the Python path to the existing environment
+python_path <- "/home/mustafa/miniforge3/envs/giotto_env/bin/python"
+
+# Set up Giotto instructions with the manually specified Python path
+results_folder <- "./results/Giotto_DMSO_results/ONTgene"
+
+# Create the results folder if it doesn't exist
+if (!dir.exists(results_folder)) {
+  dir.create(results_folder, recursive = TRUE)
+}
+
+# Create Giotto instructions with Python path
+instrs <- createGiottoInstructions(
+  save_plot = TRUE, 
+  save_dir = results_folder, 
+  show_plot = FALSE, 
+  python_path = python_path
+)
+
+# Check instructions to confirm the setup
+print(instrs)
+
+```
+
+# Change background to white
+
+```{r step3b_white_background}
+library(magick)
+
+# Load the image
+image_path <- "./DMSO/spaceranger_out_run2/outs/spatial/tissue_hires_image.png"
+image <- image_read(image_path)
+
+# Convert image to CMYK and extract magenta and black channels
+im_magenta <- image |>
+  image_convert(colorspace = "cmyk") |>
+  image_channel(channel = "Magenta")
+
+im_black <- image |>
+  image_convert(colorspace = "cmyk") |>
+  image_channel(channel = "Black")
+
+# Combine the magenta and black channels by averaging them
+im_combined <- image_composite(im_magenta, im_black, operator = "plus")
+
+# Apply a lower blur and threshold with finer values
+im_threshold <- im_combined |>
+  image_blur(radius = 0, sigma = 0.8) |>
+  image_threshold(type = "black", threshold = "10%") |>
+  image_threshold(type = "white", threshold = "0.2%")
+
+# Optional: Refine the mask to clean up small artifacts
+im_refined <- im_threshold |>
+  image_morphology(method = "Erode", kernel = "Disk:1")
+
+# Combine the mask with the original image
+mask <- im_refined |> image_transparent("black")
+im_composite <- image_composite(mask, image)
+
+# Save the resulting masked image as a PNG file
+output_path <- "./DMSO/spaceranger_out_run2/outs/spatial/tissue_hires_image_whtbg.png"
+image_write(im_composite, path = output_path, format = "png")
+
+# Optionally display the original and masked images
+par(mfrow = c(1, 2), mar = c(0, 0, 0, 0))
+image |> as.raster() |> plot()
+im_composite |> as.raster() |> plot()
+
+```
+
+## Load Your Sample Data (Visium)
+
+```{r step3c_load_visium}
+# Create Giotto object using your Visium data
+SpatialTrans_DMSO <- createGiottoVisiumObject(
+  visium_dir = data_dir_10x_DMSO,  # Use the root directory of the Visium data
+  expr_data = "raw",               # Use "filtered" or "raw" based on your preference
+  png_name = "tissue_hires_image_whtbg.png", #use White background remove whtbg from file if want to use original image
+  gene_column_index = 2,           # Default column for gene names
+  instructions = instrs            # Use the instructions we created
+)
+
+# Print a summary of the Giotto object
+print(SpatialTrans_DMSO)
+```
+
+# Step 4: Replace with ONT Gene Expression Data
+
+```{r step4_replace_ont_expression}
+# Step 4.1: Load ONT gene expression data
+# --------------------------------------
+SpatialTrans_DMSO_ONTgene <- get10Xmatrix(
+  "./DMSO/SR1040-610_DMSO/gene_raw_feature_bc_matrix", 
+  gene_column_index = 2
+)
+
+# Step 4.2: Get spatial locations from the original Giotto object
+# ----------------------------------------------------------------
+spatlocs <- getSpatialLocations(gobject = SpatialTrans_DMSO, 
+                                output = "data.table")
+
+# Step 4.3: Barcode validation - verify alignment between Visium and ONT data
+# --------------------------------------------------------------------------
+visium_barcodes <- spatlocs$cell_ID
+ont_barcodes <- colnames(SpatialTrans_DMSO_ONTgene)
+matched_barcodes <- intersect(visium_barcodes, ont_barcodes)
+
+cat("=== Barcode Validation ===\n")
+cat("Visium spatial barcodes:", length(visium_barcodes), "\n")
+cat("ONT expression barcodes:", length(ont_barcodes), "\n")
+cat("Matched barcodes:", length(matched_barcodes), "\n")
+cat("Visium-only barcodes (dropped):", length(setdiff(visium_barcodes, ont_barcodes)), "\n")
+cat("ONT-only barcodes (dropped):", length(setdiff(ont_barcodes, visium_barcodes)), "\n")
+
+# Filter to matched barcodes only
+spatlocs_filtered <- spatlocs[cell_ID %in% matched_barcodes]
+SpatialTrans_DMSO_ONTgene <- SpatialTrans_DMSO_ONTgene[, matched_barcodes]
+
+# Verify barcode order matches
+stopifnot("Barcode order mismatch!" = all(spatlocs_filtered$cell_ID == colnames(SpatialTrans_DMSO_ONTgene)))
+cat("Barcode validation: PASSED\n")
+
+# Step 4.4: Create a new Giotto object with ONT gene expression and spatial locations
+# ------------------------------------------------------------------------------------
+SpatialTrans_DMSO_ONTgene <- createGiottoObject(
+  expression = SpatialTrans_DMSO_ONTgene, 
+  spatial_locs = spatlocs_filtered,
+  instructions = instrs            # Use the instructions we created
+)
+```
+
+# Step 4.5: Transfer Image from Original Giotto Object
+
+```{r step4_5_transfer_image}
+hiResG_img <- getGiottoImage(SpatialTrans_DMSO)  # Get the image from the original object
+
+SpatialTrans_DMSO_ONTgene <- addGiottoImage(
+  gobject = SpatialTrans_DMSO_ONTgene, 
+  images = list(hiResG_img)
+)
+```
+
+# Step 4.6: Transfer Cell Metadata and Spatial Information
+
+```{r step4_6_transfer_metadata}
+# Transfer cell metadata from the original object
+SpatialTrans_DMSO_ONTgene@cell_metadata$cell$rna@metaDT <- 
+  SpatialTrans_DMSO@cell_metadata$cell$rna@metaDT
+
+# Transfer spatial information from the original object
+SpatialTrans_DMSO_ONTgene@spatial_info <- SpatialTrans_DMSO@spatial_info
+
+SpatialTrans_DMSO_ONTgene@instructions$micron_scale <- SpatialTrans_DMSO@instructions$micron_scale
+
+# Verify the updated Giotto object
+str(SpatialTrans_DMSO_ONTgene)  # Check the structure of the new object
+
+# Print summary of the updated Giotto object
+print(SpatialTrans_DMSO_ONTgene)
+
+# Optional: Verify dimensions of the new expression matrix
+print(dim(SpatialTrans_DMSO_ONTgene@expression[["cell"]][["rna"]][["raw"]]@exprMat))
+```
+
+# Step 5: Save and Load Giotto Object
+
+## 5a. Save Giotto Object
+
+```{r step5a_save_giotto}
+saveGiotto(SpatialTrans_DMSO_ONTgene, "./GiottoSuite_DMSO_ONTgene", overwrite = TRUE)
+```
+
+## 5b. Load Giotto Object
+
+```{r step5b_load_giotto}
+SpatialTrans_DMSO_ONTgene <- loadGiotto("./GiottoSuite_DMSO_ONTgene")
+```
+
+
+# Step 6: Visualize Spots Covered by Tissue
+
+Use the metadata column "in_tissue" to highlight the spots corresponding to the tissue area.
+
+```{r step6_visualize_tissue}
+# Set up Giotto instructions with the manually specified Python path
+results_folder <- "./results/Giotto_DMSO_results/ONTgene"
+
+
+# Define the save parameters
+base_save_parameters <- list(
+  save_dir = results_folder,  # Directory where the plots will be saved
+  save_format = "png",        # Save as PNG format
+  units = "in",               # Units for width and height (inches)
+  base_width = 10,             # Width of the plot
+  base_height = 10,            # Height of the plot
+  dpi = 600                   # Resolution (DPI)
+)
+
+# Create the plot, save it as 'SpatPlot2_in_tissue.png', and return it for display
+SpatPlot2_in_tissue <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  cell_color = "in_tissue",
+  point_alpha = 0.5,         # Set transparency for better visualization
+  point_size = 3,
+  cell_color_code = c("0" = "lightgrey", "1" = "blue"),
+  show_image = TRUE,               # Show the underlying image
+  save_plot = TRUE,                # Save the plot
+  save_param = base_save_parameters,    # Apply the save parameters
+  return_plot = TRUE,               # Return the plot object to display after saving
+  default_save_name = "SpatPlot2_in_tissue"  # Save plot with this name
+)
+
+# Display the plot as 'SpatPlot2_in_tissue'
+print(SpatPlot2_in_tissue)
+
+```
+
+
+# Step 7: Quality Control
+
+Use the function addStatistics() to count the number of features per spot. The statistics information will be stored in the metadata table under the new column "nr_feats".
+
+```{r step7_qc_statistics}
+# Add statistics
+SpatialTrans_DMSO_ONTgene_statistics <- addStatistics(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  expression_values = "raw"
+)
+```
+
+## Step 7a: Compute Mitochondrial and Ribosomal QC Metrics
+
+```{r step7a_mito_ribo_qc}
+# Get raw expression matrix for QC calculations
+expr_matrix <- getExpression(SpatialTrans_DMSO_ONTgene_statistics, 
+                              values = "raw", 
+                              output = "matrix")
+
+# Identify mitochondrial genes (MT- prefix)
+mito_genes <- rownames(expr_matrix)[grep("^MT-", rownames(expr_matrix))]
+cat("Mitochondrial genes detected:", length(mito_genes), "\n")
+cat("Genes:", paste(mito_genes, collapse = ", "), "\n\n")
+
+# Identify ribosomal genes (RPL and RPS prefix)
+ribo_genes <- rownames(expr_matrix)[grep("^RP[LS]", rownames(expr_matrix))]
+cat("Ribosomal genes detected:", length(ribo_genes), "\n")
+
+# Calculate total counts per spot
+total_counts <- colSums(expr_matrix)
+
+# Calculate mitochondrial percentage
+mito_counts <- colSums(expr_matrix[mito_genes, , drop = FALSE])
+pct_mito <- (mito_counts / total_counts) * 100
+
+# Calculate ribosomal percentage
+ribo_counts <- colSums(expr_matrix[ribo_genes, , drop = FALSE])
+pct_ribo <- (ribo_counts / total_counts) * 100
+
+# Add QC metrics to cell metadata
+cell_meta <- getCellMetadata(SpatialTrans_DMSO_ONTgene_statistics, output = "data.table")
+cell_meta[, pct_mito := pct_mito[match(cell_ID, names(pct_mito))]]
+cell_meta[, pct_ribo := pct_ribo[match(cell_ID, names(pct_ribo))]]
+
+# Update Giotto object with new metadata
+SpatialTrans_DMSO_ONTgene_statistics <- addCellMetadata(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics,
+  new_metadata = cell_meta[, .(cell_ID, pct_mito, pct_ribo)],
+  by_column = TRUE,
+  column_cell_ID = "cell_ID"
+)
+
+# Print QC Summary
+cat("\n=== Pre-filter QC Summary (DMSO) ===\n")
+cat("Total spots:", length(total_counts), "\n")
+cat("\n%Mitochondrial distribution:\n")
+print(summary(pct_mito))
+cat("\n%Ribosomal distribution:\n")
+print(summary(pct_ribo))
+cat("\nTotal counts per spot:\n")
+print(summary(total_counts))
+```
+
+## Step 7b: Visualize %Mito and %Ribo Spatially
+
+```{r step7b_mito_ribo_plots}
+# Spatial plot of %Mito
+SpatPlot2_pct_mito <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics,
+  cell_color = "pct_mito",
+  point_size = 3,
+  show_image = TRUE,
+  color_as_factor = FALSE,
+  cell_color_gradient = c("white", "orange", "red"),
+  save_plot = TRUE,
+  save_param = base_save_parameters,
+  return_plot = TRUE,
+  default_save_name = "SpatPlot2_QC_pct_mito"
+)
+print(SpatPlot2_pct_mito)
+
+# Spatial plot of %Ribo
+SpatPlot2_pct_ribo <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics,
+  cell_color = "pct_ribo",
+  point_size = 3,
+  show_image = TRUE,
+  color_as_factor = FALSE,
+  cell_color_gradient = c("white", "lightblue", "blue"),
+  save_plot = TRUE,
+  save_param = base_save_parameters,
+  return_plot = TRUE,
+  default_save_name = "SpatPlot2_QC_pct_ribo"
+)
+print(SpatPlot2_pct_ribo)
+
+# Distribution histograms
+par(mfrow = c(1, 2))
+hist(pct_mito, breaks = 50, main = "Distribution of %Mito", xlab = "%Mitochondrial", col = "salmon")
+abline(v = median(pct_mito), col = "red", lwd = 2, lty = 2)
+hist(pct_ribo, breaks = 50, main = "Distribution of %Ribo", xlab = "%Ribosomal", col = "lightblue")
+abline(v = median(pct_ribo), col = "blue", lwd = 2, lty = 2)
+par(mfrow = c(1, 1))
+```
+
+## Step 7c: Standard QC Visualization
+
+```{r step7c_qc_nr_feats}
+# Visualize the number of features per spot (nr_feats) and save the plot
+SpatPlot2_QC_nr_feats <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics,
+  cell_color = "nr_feats",           # Color based on the number of features (genes) per spot
+  point_size = 3,
+  show_image = TRUE,                 # Show the underlying image
+  color_as_factor = FALSE,           # Use a continuous color scale (not a factor)
+  save_plot = TRUE,                  # Save the plot
+  save_param = base_save_parameters,   # Apply the save parameters
+  return_plot = TRUE,                 # Return the plot object to display after saving
+  default_save_name = "SpatPlot2_QC_nr_feats"  # Save plot with this name
+)
+
+# Display the QC plot
+print(SpatPlot2_QC_nr_feats)
+
+```
+
+```{r step7_qc_total_expr}
+# Visualize the number of features per spot (nr_feats) and save the plot
+SpatPlot2_total_expr <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics,
+  cell_color = "total_expr",           # Color based on the number of features (genes) per spot
+  point_size = 3,
+  show_image = TRUE,                 # Show the underlying image
+  color_as_factor = FALSE,           # Use a continuous color scale (not a factor)
+  save_plot = TRUE,                  # Save the plot
+  save_param = base_save_parameters,   # Apply the save parameters
+  return_plot = TRUE,                 # Return the plot object to display after saving
+  default_save_name = "SpatPlot2_QC_total_expr"  # Save plot with this name
+)
+
+# Display the QC plot
+print(SpatPlot2_total_expr)
+
+```
+
+# Step 7.1: Distribution of Features per Spot
+
+```{r step7_1_dist_cells}
+
+# Filter distribution by cells
+Dist_cells <- filterDistributions(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics, 
+  detection = "cells",               # Detect based on cells
+  save_param = base_save_parameters,  # Save the plot
+  default_save_name = "Dist_cells"  # Save plot with this name
+)
+
+# Display the plot
+print(Dist_cells)
+```
+
+```{r step7_1_dist_feats}
+# Filter distribution by features
+Dist_feats <- filterDistributions(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics, 
+  detection = "feats",               # Detect based on features
+  save_param = base_save_parameters,  # Save the plot
+  default_save_name = "Dist_feats"  # Save plot with this name
+)
+
+# Display the plot
+print(Dist_feats)
+```
+
+```{r step7_1_comb_thresholds}
+# Filter combinations of detection thresholds
+Comb_thresholds <- filterCombinations(
+  gobject = SpatialTrans_DMSO_ONTgene_statistics,
+  expression_thresholds = c(1, 2, 3, 4),        # Expression thresholds
+  feat_det_in_min_cells = c(1, 10, 100, 1000),   # Minimum detected features in cells
+  min_det_feats_per_cell = c(200, 400, 800, 1600), # Minimum detected features per cell
+  save_param = base_save_parameters,  # Save the plot
+  default_save_name = "Comb_thresholds"  # Save plot with this name
+)
+print(Comb_thresholds)
+```
+
+# Run filtering strategies interactively
+
+```{r step7_2_interactive_filter, eval=FALSE}
+# Source the external Shiny app script
+source("./scripts/giotto_interactive_filter.R")
+
+```
+
+# Step 8: Apply Filtering Strategy
+
+```{r step8_filtering}
+# Get cell metadata from Giotto object
+cell_metadata <- getCellMetadata(SpatialTrans_DMSO_ONTgene, output = "data.table")
+
+# Subset spots that are within the tissue area
+in_tissue_barcodes <- cell_metadata[in_tissue == 1]$cell_ID
+SpatialTrans_DMSO_ONTgene <- subsetGiotto(gobject = SpatialTrans_DMSO_ONTgene, cell_ids = in_tissue_barcodes)   
+
+# Re-add statistics after subsetting
+SpatialTrans_DMSO_ONTgene <- addStatistics(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  expression_values = "raw"
+)
+
+# Define filtering parameters as variables
+expression_threshold <- 1
+feat_det_in_min_spots <- 30  # Reducing this leads to differential expression of few spots
+min_det_feats_per_spot <- 550
+
+# Filter the Giotto object directly into SpatialTrans_DMSO_ONTgene
+SpatialTrans_DMSO_ONTgene <- filterGiotto(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  expression_threshold = expression_threshold,
+  feat_det_in_min_cells = feat_det_in_min_spots,
+  min_det_feats_per_cell = min_det_feats_per_spot,
+  expression_values = "raw",
+  verbose = TRUE
+)
+
+# Normalize the Giotto object with a specified scale factor (default 6000)
+SpatialTrans_DMSO_ONTgene <- normalizeGiotto(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  scalefactor = 6000,
+  verbose = TRUE
+)
+
+# Add statistics for visualization (post-filter)
+SpatialTrans_DMSO_ONTgene <- addStatistics(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  expression_values = "raw"
+)
+
+# Post-filter QC summary
+post_filter_meta <- getCellMetadata(SpatialTrans_DMSO_ONTgene, output = "data.table")
+cat("\n=== Post-filter QC Summary ===\n")
+cat("Remaining spots:", nrow(post_filter_meta), "\n")
+
+# Create the QC plot after filtering
+SpatPlot2_QC_afterfiltering <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  cell_color = "total_expr",
+  point_size = 6,
+  point_shape = "border",
+  show_image = TRUE,
+  image_name = "image",
+  point_alpha = 0.7,
+  color_as_factor = FALSE,
+  cell_color_gradient = c("#f6d9d9", "#fb0000"),
+  save_plot = FALSE,  # Disable auto-save
+  return_plot = TRUE
+)
+
+SpatPlot2_QC_afterfiltering_gg <- SpatPlot2_QC_afterfiltering + 
+  # Add bold title
+  annotate(
+    "label", 
+    x = Inf, y = -Inf, 
+    label = "Spots Filtering Criteria",
+    hjust = 1.05, vjust = -4.8, size = 4, color = "black", fontface = "bold",
+    fill = "white", alpha = 0.9, label.padding = unit(0.3, "lines")
+  ) +
+  # Add the filtering criteria details below the title
+  annotate(
+    "label", 
+    x = Inf, y = -Inf, 
+    label = paste0(
+      "• Expression threshold: ", expression_threshold, "\n",
+      "• Feature detection in min spots: ", feat_det_in_min_spots, "\n",
+      "• Min detected features per spot: ", min_det_feats_per_spot
+    ),
+    hjust = 1.05, vjust = -0.1, size = 3.5, color = "black", 
+    fill = "white", alpha = 0.85, label.padding = unit(0.4, "lines")
+  )
+# Define the save directory
+save_directory <- "./results/Giotto_DMSO_results/ONTgene/"
+
+# Save the updated plot with annotations to the specified directory
+ggsave(
+  filename = file.path(save_directory, "SpatPlot2_QC_afterfiltering_with_annotations.png"),
+  plot = SpatPlot2_QC_afterfiltering_gg, 
+  width = 10, height = 10, dpi = 600
+)
+
+# Define the new save directory
+supplementary_figures <- "./figures/paper_figures/supplementary"
+
+# Save the updated plot with annotations to the new directory
+ggsave(
+  filename = file.path(supplementary_figures, "Filtering_Criteria_Total_Expr.png"),
+  plot = SpatPlot2_QC_afterfiltering_gg, 
+  width = 10, height = 10, dpi = 600
+)
+
+# Display the updated plot
+print(SpatPlot2_QC_afterfiltering_gg)
+
+
+```
+
+## Step 8a: Post-filter %Mito and %Ribo QC (Sensitivity Analysis)
+
+```{r step8a_postfilter_mito_ribo}
+# Re-compute %Mito and %Ribo after filtering for sensitivity analysis
+expr_matrix_post <- getExpression(SpatialTrans_DMSO_ONTgene, 
+                                   values = "raw", 
+                                   output = "matrix")
+
+# Get gene lists
+mito_genes_post <- rownames(expr_matrix_post)[grep("^MT-", rownames(expr_matrix_post))]
+ribo_genes_post <- rownames(expr_matrix_post)[grep("^RP[LS]", rownames(expr_matrix_post))]
+
+# Calculate metrics
+total_counts_post <- colSums(expr_matrix_post)
+mito_counts_post <- colSums(expr_matrix_post[mito_genes_post, , drop = FALSE])
+ribo_counts_post <- colSums(expr_matrix_post[ribo_genes_post, , drop = FALSE])
+pct_mito_post <- (mito_counts_post / total_counts_post) * 100
+pct_ribo_post <- (ribo_counts_post / total_counts_post) * 100
+
+# Add to metadata
+post_meta <- getCellMetadata(SpatialTrans_DMSO_ONTgene, output = "data.table")
+post_meta[, pct_mito := pct_mito_post[match(cell_ID, names(pct_mito_post))]]
+post_meta[, pct_ribo := pct_ribo_post[match(cell_ID, names(pct_ribo_post))]]
+
+SpatialTrans_DMSO_ONTgene <- addCellMetadata(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  new_metadata = post_meta[, .(cell_ID, pct_mito, pct_ribo)],
+  by_column = TRUE,
+  column_cell_ID = "cell_ID"
+)
+
+# Print Post-filter QC Summary
+cat("\n=== Post-filter QC Summary (DMSO) ===\n")
+cat("Remaining spots after QC filtering:", length(total_counts_post), "\n")
+cat("\n%Mitochondrial distribution (post-filter):\n")
+print(summary(pct_mito_post))
+cat("\n%Ribosomal distribution (post-filter):\n")
+print(summary(pct_ribo_post))
+
+# Visualize post-filter %Mito spatially
+SpatPlot2_pct_mito_postfilter <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  cell_color = "pct_mito",
+  point_size = 4,
+  show_image = TRUE,
+  color_as_factor = FALSE,
+  cell_color_gradient = c("white", "orange", "red"),
+  save_plot = TRUE,
+  save_param = base_save_parameters,
+  return_plot = TRUE,
+  default_save_name = "SpatPlot2_QC_pct_mito_postfilter"
+)
+print(SpatPlot2_pct_mito_postfilter)
+
+# Visualize post-filter %Ribo spatially
+SpatPlot2_pct_ribo_postfilter <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  cell_color = "pct_ribo",
+  point_size = 4,
+  show_image = TRUE,
+  color_as_factor = FALSE,
+  cell_color_gradient = c("white", "lightblue", "blue"),
+  save_plot = TRUE,
+  save_param = base_save_parameters,
+  return_plot = TRUE,
+  default_save_name = "SpatPlot2_QC_pct_ribo_postfilter"
+)
+print(SpatPlot2_pct_ribo_postfilter)
+```
+
+
+
+# Step 10: Highly Variable Features (HVF)
+
+```{r step10_hvf}
+# Calculate HVF using loess regression
+SpatialTrans_DMSO_ONTgene <- calculateHVF(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  method = "cov_loess",               # Loess regression method
+  save_plot = TRUE,                   # Save the plot
+  show_plot = TRUE,                   # Show the plot
+  default_save_name = "HVFplot_loess"  # Save plot with this name
+)
+
+# Calculate HVF using Pearson residuals
+SpatialTrans_DMSO_ONTgene <- calculateHVF(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  method = "var_p_resid",             # Pearson residuals method
+  save_plot = TRUE,                   # Save the plot
+  show_plot = TRUE,                   # Show the plot
+  default_save_name = "HVFplot_pearson"  # Save plot with this name
+)
+
+# Calculate HVF using binned (covariance groups)
+SpatialTrans_DMSO_ONTgene <- calculateHVF(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  method = "cov_groups",              # Binned method
+  save_plot = TRUE,                   # Save the plot
+  show_plot = TRUE,                   # Show the plot 
+  default_save_name = "HVFplot_binned"  # Save plot with this name
+)
+
+```
+
+# Step 11: Principal Component Analysis (PCA)
+
+## 11.1 Run PCA Using HVFs
+
+```{r step11_1_pca}
+# Set seed for reproducibility
+set.seed(123)
+
+# Run PCA using highly variable features
+SpatialTrans_DMSO_ONTgene <- runPCA(
+  gobject = SpatialTrans_DMSO_ONTgene
+)
+
+# Visualize the percentage of variance explained by each principal component
+screePlot_DMSO <- screePlot(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  ncp = 20,                       # Number of principal components to display
+  save_plot = TRUE,                # Save the plot
+  save_param = base_save_parameters,   # Apply the save parameters
+  default_save_name = "ScreePlot_PCA"  # Save plot with this name
+)
+
+# Display the scree plot
+print(screePlot_DMSO)
+
+```
+
+## 11.2 Run Custom PCA with Selected Features
+
+```{r step11_2_custom_pca}
+# Extract the top 100 features for custom PCA
+my_features <- head(
+  getFeatureMetadata(SpatialTrans_DMSO_ONTgene, output = "data.table")$feat_ID, 
+  500
+)
+
+# Run PCA with the custom selected features
+SpatialTrans_DMSO_ONTgene <- runPCA(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  feats_to_use = my_features,
+  name = "custom_pca",
+  ncp = 5  # Retain only the top 6 PCs
+)
+
+# Visualize the PCA plot using highly variable features (HVFs)
+PCAplot_HVFs <- Giotto::plotPCA(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  save_plot = TRUE,                # Save the plot
+  save_param = base_save_parameters,   # Apply the save parameters
+  default_save_name = "PCAplot_HVFs",  # Save plot with this name
+  point_size = 4
+)
+
+# Display the PCA plot
+print(PCAplot_HVFs)
+
+# Visualize the custom PCA plot using the selected features
+PCAplot_custom <- Giotto::plotPCA(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  dim_reduction_name = "custom_pca",  # Use the custom PCA
+  save_plot = TRUE,                   # Save the plot
+  save_param = base_save_parameters,  # Apply the save parameters
+  default_save_name = "PCAplot_custom",  # Save plot with this name
+  point_size = 4
+)
+
+# Display the custom PCA plot
+print(PCAplot_custom)
+
+```
+
+# Step 12: Run t-SNE and UMAP
+
+## 12.1 Run UMAP
+
+```{r step12_1_umap}
+
+# Run UMAP on the first 10 principal components
+SpatialTrans_DMSO_ONTgene <- runUMAP(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  dimensions_to_use = 1:5,          # Use the first 10 dimensions
+  verbose = TRUE
+)
+
+# Visualize the UMAP plot
+UMAPplot <- plotUMAP(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  save_plot = TRUE,                  # Save the plot
+  save_param = base_save_parameters,   # Apply the save parameters
+  default_save_name = "UMAPplot_PCA10",  # Save plot with this name
+  point_size = 4
+)
+
+# Display the UMAP plot
+print(UMAPplot)
+```
+
+## 12.2 Run t-SNE
+
+```{r step12_2_tsne}
+
+# Run t-SNE on the first 10 principal components
+SpatialTrans_DMSO_ONTgene <- runtSNE(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  dimensions_to_use = 1:5,          # Use the first 10 dimensions
+  verbose = TRUE
+)
+
+# Visualize the t-SNE plot
+tSNEplot <- plotTSNE(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  save_plot = TRUE,                  # Save the plot
+  save_param = base_save_parameters,   # Apply the save parameters
+  default_save_name = "tSNEplot_PCA10",  # Save plot with this name
+  point_size = 4
+)
+
+# Display the t-SNE plot
+print(tSNEplot)
+```
+
+# Step 13: Create Nearest Neighbor Networks
+
+```{r step13_nn_network}
+# Set seed for reproducibility
+set.seed(123)
+
+# Create a sNN network (default)
+SpatialTrans_DMSO_ONTgene <- createNearestNetwork(gobject = SpatialTrans_DMSO_ONTgene, 
+                                     dimensions_to_use = 1:5, 
+                                     k = 20)
+# Create a kNN network
+SpatialTrans_DMSO_ONTgene <- createNearestNetwork(gobject = SpatialTrans_DMSO_ONTgene, 
+                                     dimensions_to_use = 1:5, 
+                                     k = 20,
+                                     type = "kNN")
+
+```
+
+# Step 14: Leiden Clustering
+
+## 14.1 Calculate Leiden Clusters and Visualize in PCA Space
+
+```{r step14_1_leiden_pca}
+# Set seed for reproducibility of clustering results
+set.seed(123)
+
+# Calculate Leiden clustering with a resolution of 1.2
+SpatialTrans_DMSO_ONTgene <- doLeidenCluster(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  resolution = 1.2,           # Resolution for clustering Try 1.0 if too many cluserts drop 
+  n_iterations = 1000,        # Number of iterations
+  nn_network_to_use = "sNN"   # Use the sNN or kNN network
+)
+
+
+# Visualize PCA plot colored by Leiden clusters
+PCAplot_LeidenClusters <- Giotto::plotPCA(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  cell_color = "leiden_clus",         # Color by Leiden clusters
+  save_plot = TRUE,                   # Save the plot
+  save_param = base_save_parameters,  # Apply the save parameters
+  return_plot = TRUE, # Return the plot object to display after saving
+  default_save_name = "plotPCA_LeidenClusters",  # Save plot with this name
+  point_size = 4
+)
+
+# Display the PCA plot with Leiden clusters
+print(PCAplot_LeidenClusters)
+
+```
+
+## Plot in UMAP Space 
+### Set the argument "show_NN_network = TRUE" to visualize the connections between spots.
+
+```{r step14_1_leiden_umap}
+plotUMAP_LeidenClusters <- plotUMAP(gobject = SpatialTrans_DMSO_ONTgene,
+         cell_color = "leiden_clus", 
+         show_NN_network = FALSE, 
+         save_plot = TRUE,                   # Save the plot
+         save_param = base_save_parameters,  # Apply the save parameters
+         default_save_name = "plotUMAP_LeidenClusters",  # Save plot with this name
+         point_size = 4)
+      
+print(plotUMAP_LeidenClusters)
+
+
+plotUMAP_LeidenClusters_NN_network <- plotUMAP(gobject = SpatialTrans_DMSO_ONTgene,
+         cell_color = "leiden_clus", 
+         show_NN_network = TRUE, 
+         save_plot = TRUE,                   # Save the plot
+         save_param = base_save_parameters,  # Apply the save parameters
+         default_save_name = "plotUMAP_LeidenClusters_NN_network",  # Save plot with this name
+         point_size = 4)
+      
+print(plotUMAP_LeidenClusters_NN_network )
+
+```
+
+## Plot in PCA Space
+
+```{r step14_1_leiden_tsne}
+plottSNE_LeidenClusters <- plotTSNE(gobject = SpatialTrans_DMSO_ONTgene,
+         cell_color = "leiden_clus", 
+         show_NN_network = FALSE, 
+         save_plot = TRUE,                   # Save the plot
+         save_param = base_save_parameters,  # Apply the save parameters
+         default_save_name = "plottSNE_LeidenClusters",  # Save plot with this name
+         point_size = 4)
+      
+print(plottSNE_LeidenClusters)
+
+
+plottSNE_LeidenClusters_NN_network <- plotTSNE(gobject = SpatialTrans_DMSO_ONTgene,
+         cell_color = "leiden_clus", 
+         show_NN_network = TRUE, 
+         save_plot = TRUE,                   # Save the plot
+         save_param = base_save_parameters,  # Apply the save parameters
+         default_save_name = "plottSNE_LeidenClusters_NN_network",  # Save plot with this name
+         point_size = 4)
+      
+print(plottSNE_LeidenClusters_NN_network)
+```
+
+## 14.2 Visualize Leiden Clusters Spatially
+
+```{r step14_2_leiden_spatial}
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 250  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Generate the plot first
+SpatPlot2_leiden_clusters <- spatPlot2D(
+  gobject = SpatialTrans_DMSO_ONTgene,
+  cell_color = "leiden_clus",
+  point_size = 5.5,
+  point_alpha = 0.7,
+  show_image = TRUE,
+  save_plot = FALSE,
+  title = "",
+  return_plot = TRUE  # Ensure we get the ggplot object back
+)
+
+# Extract axis limits dynamically from the ggplot object
+gg_build <- ggplot2::ggplot_build(SpatPlot2_leiden_clusters)
+x_limits <- gg_build$layout$panel_params[[1]]$x.range
+y_limits <- gg_build$layout$panel_params[[1]]$y.range
+
+# Calculate bottom-right position dynamically
+x_right <- x_limits[2] - scale_bar_length_pixels - 20  # Right edge minus scale bar length and padding
+y_bottom <- y_limits[1] + 80  # Bottom edge plus padding
+
+# Add annotations (scale bar and text) and fix legend title and symbol size
+SpatPlot2_leiden_clusters <- SpatPlot2_leiden_clusters +
+  ggplot2::theme(
+    legend.title = ggplot2::element_text(size = 12, face = "bold"),  # Add legend title style
+    legend.text = ggplot2::element_text(size = 10)  # Increase legend text size
+  ) +
+  ggplot2::labs(
+    fill = "Leiden Clusters",  # Explicitly set the legend title
+    x = "x coordinates",
+    y = "y coordinates"
+  ) +
+  ggplot2::guides(
+    fill = ggplot2::guide_legend(
+      override.aes = list(size = 6)  # Increase legend symbol size
+    )
+  ) +
+  ggplot2::annotate(
+    "segment",
+    x = x_right,
+    xend = x_right + scale_bar_length_pixels,
+    y = y_bottom + 160,
+    yend = y_bottom + 160,
+    color = "black",
+    linewidth = 1.5,
+    lineend = "round"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_right + scale_bar_length_pixels / 2,
+    y = y_bottom - 30,
+    label = paste0(scale_bar_length_microns, " µm"),
+    color = "black",
+    size = 4,
+    hjust = 0.5
+  )
+
+# Display the plot
+print(SpatPlot2_leiden_clusters)
+
+# Define file paths
+png_path <- file.path(base_save_parameters$save_dir, "Leiden_clusters.png")
+pdf_path <- file.path(base_save_parameters$save_dir, "Leiden_clusters.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = SpatPlot2_leiden_clusters,
+  base_height = 10,
+  base_width = 8,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = SpatPlot2_leiden_clusters,
+  base_height = 10,
+  base_width = 8,
+  device = cairo_pdf
+)
+
+
+# Define file paths
+png_path <- file.path(supplementary_figures, "Leiden_clusters_wholesection.png")
+pdf_path <- file.path(supplementary_figures, "Leiden_clusters_wholesection.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = SpatPlot2_leiden_clusters,
+  base_height = 10,
+  base_width = 8,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = SpatPlot2_leiden_clusters,
+  base_height = 10,
+  base_width = 8,
+  device = cairo_pdf
+)
+
+```
+
+# Subset tumouroids
+
+# Tumoroid_1
+
+```{r step15_tumoroid_1}
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Coordinates for placing the scale bar
+x_right <- 18300 - scale_bar_length_pixels - 20  # Adjusted for xlim
+y_bottom <- -17000 + 80  # Adjusted for ylim
+
+Tumouroid_1 <- spatInSituPlotPoints(
+  SpatialTrans_DMSO_ONTgene, 
+  background_color = "white",
+  polygon_fill = "leiden_clus",
+  polygon_fill_as_factor = TRUE,
+  show_image = TRUE,
+  save_plot = FALSE,
+  show_legend = FALSE,
+  xlim = c(13800, 18300), 
+  ylim = c(-17000, -14000)
+) +
+  ggplot2::theme_classic() +
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(color = "black"),
+    axis.title.x = ggplot2::element_text(size = 20),
+    axis.title.y = ggplot2::element_text(size = 20),
+    axis.text.x = ggplot2::element_text(size = 14),
+    axis.text.y = ggplot2::element_text(size = 14),
+    legend.position = "none"
+  ) +
+  ggplot2::labs(
+    x = "x coordinates",
+    y = "y coordinates",
+    fill = "Leiden Clusters"  # Add legend title (doesn't matter if legend is removed)
+  ) +
+  ggplot2::annotate(
+    "segment",
+    x = x_right,
+    xend = x_right + scale_bar_length_pixels,
+    y = y_bottom + 60,
+    yend = y_bottom + 60,
+    color = "black",
+    linewidth = 2,
+    lineend = "round"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_right + scale_bar_length_pixels / 2,
+    y = y_bottom - 40,
+    label = paste0(scale_bar_length_microns, " µm"),
+    color = "black",
+    size = 7,
+    fontface = "bold",
+    hjust = 0.5
+  )
+
+# Print the modified plot
+print(Tumouroid_1)
+
+png_path <- file.path(base_save_parameters$save_dir, "Tumouroid_1.png")
+pdf_path <- file.path(base_save_parameters$save_dir, "Tumouroid_1.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = Tumouroid_1,
+  base_height = 10,
+  base_width = 12,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = Tumouroid_1,
+  base_height = 10,
+  base_width = 12,
+  device = cairo_pdf
+)
+
+```
+
+# Tumoroid_2
+
+```{r step15_tumoroid_2}
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Coordinates for placing the scale bar
+x_right <- 18200 - scale_bar_length_pixels - 20  # Adjusted for xlim
+y_bottom <- -13800 + 80  # Adjusted for ylim
+
+
+Tumouroid_2 <- spatInSituPlotPoints(
+  SpatialTrans_DMSO_ONTgene, 
+  background_color = "white",
+  polygon_fill = "leiden_clus",
+  polygon_fill_as_factor = TRUE,
+  show_image = TRUE,
+  save_plot = FALSE,
+  show_legend =FALSE,
+  xlim = c(14000, 18200), 
+  ylim = c(-13800, -11100)
+) +
+  ggplot2::theme_classic() +
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(color = "black"),
+    axis.title.x = ggplot2::element_text(size = 20),
+    axis.title.y = ggplot2::element_text(size = 20),
+    axis.text.x = ggplot2::element_text(size = 14),
+    axis.text.y = ggplot2::element_text(size = 14),
+    legend.position = "none"
+  ) +
+  ggplot2::labs(
+    x = "x coordinates",
+    y = "y coordinates",
+    fill = "Leiden Clusters"  # Add legend title
+  ) +
+  ggplot2::annotate(
+    "segment",
+    x = x_right,
+    xend = x_right + scale_bar_length_pixels,
+    y = y_bottom + 60,
+    yend = y_bottom + 60,
+    color = "black",
+    linewidth = 2,
+    lineend = "round"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_right + scale_bar_length_pixels / 2,
+    y = y_bottom - 40,
+    label = paste0(scale_bar_length_microns, " µm"),
+    color = "black",
+    size = 7,
+    fontface = "bold",
+    hjust = 0.5
+  )
+
+# Print the modified plot
+print(Tumouroid_2)
+
+png_path <- file.path(base_save_parameters$save_dir, "Tumouroid_2.png")
+pdf_path <- file.path(base_save_parameters$save_dir, "Tumouroid_2.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = Tumouroid_2,
+  base_height = 10,
+  base_width = 12,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = Tumouroid_2,
+  base_height = 10,
+  base_width = 12,
+  device = cairo_pdf
+)
+```
+
+# Tumoroid_3
+
+```{r step15_tumoroid_3}
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Coordinates for placing the scale bar
+x_right <- 22400 - scale_bar_length_pixels - 20  # Adjusted for xlim
+y_bottom <- -17200 + 80  # Adjusted for ylim
+
+# Get distinct colors for 5 clusters
+raw_colors <- Giotto::getDistinctColors(5)
+# Reorder colors: 1->1, 2->5, 3->2, 4->3, 5->4 based on user request
+cluster_colors <- raw_colors[c(1, 5, 2, 3, 4)]
+names(cluster_colors) <- 1:5
+
+Tumouroid_3 <- spatInSituPlotPoints(
+  SpatialTrans_DMSO_ONTgene, 
+  background_color = "white",
+  polygon_fill = "leiden_clus",
+  polygon_fill_as_factor = TRUE,
+  show_image = TRUE,
+  save_plot = FALSE,
+  xlim = c(18600, 22400), 
+  ylim = c(-17200, -13500)
+) +
+  ggplot2::theme_classic() +
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(color = "black"),
+    axis.title.x = ggplot2::element_text(size = 20),
+    axis.title.y = ggplot2::element_text(size = 20),
+    axis.text.x = ggplot2::element_text(size = 14),
+    axis.text.y = ggplot2::element_text(size = 14),
+    legend.title = ggplot2::element_text(size = 18, face = "bold"),
+    legend.text = ggplot2::element_text(size = 20, face = "bold"),
+    legend.key.size = unit(1.5, "cm")
+  ) +
+  ggplot2::scale_fill_manual(
+    values = cluster_colors, 
+    drop = FALSE, 
+    limits = names(cluster_colors), 
+    breaks = names(cluster_colors)
+  ) +
+  ggplot2::guides(fill = ggplot2::guide_legend(override.aes = list(shape = 21, size = 8, stroke = 0.5))) +
+  ggplot2::labs(
+    x = "x coordinates",
+    y = "y coordinates",
+    fill = "Leiden Clusters"  # Add legend title
+  ) +
+  ggplot2::annotate(
+    "segment",
+    x = x_right,
+    xend = x_right + scale_bar_length_pixels,
+    y = y_bottom + 60,
+    yend = y_bottom + 60,
+    color = "black",
+    linewidth = 2,
+    lineend = "round"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_right + scale_bar_length_pixels / 2,
+    y = y_bottom - 40,
+    label = paste0(scale_bar_length_microns, " µm"),
+    color = "black",
+    size = 7,
+    fontface = "bold",
+    hjust = 0.5
+  )
+
+# Print the modified plot
+print(Tumouroid_3)
+
+png_path <- file.path(base_save_parameters$save_dir, "Tumouroid_3.png")
+pdf_path <- file.path(base_save_parameters$save_dir, "Tumouroid_3.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = Tumouroid_3,
+  base_height = 10,
+  base_width = 12,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = Tumouroid_3,
+  base_height = 10,
+  base_width = 12,
+  device = cairo_pdf
+)
+
+```
+
+# Tumoroid_4
+
+```{r step15_tumoroid_4}
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Coordinates for placing the scale bar
+x_right <- 22800 - scale_bar_length_pixels - 20  # Adjusted for xlim
+y_bottom <- -13150 + 80  # Adjusted for ylim
+
+
+Tumouroid_4 <- spatInSituPlotPoints(
+  SpatialTrans_DMSO_ONTgene, 
+  background_color = "white",
+  polygon_fill = "leiden_clus",
+  polygon_fill_as_factor = TRUE,
+  show_image = TRUE,
+  save_plot = FALSE,
+  show_legend =FALSE,
+  xlim = c(20350, 22800), 
+  ylim = c(-13150, -8500)
+) +
+  ggplot2::theme_classic() +
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(color = "black"),
+    axis.title.x = ggplot2::element_text(size = 20),
+    axis.title.y = ggplot2::element_text(size = 20),
+    axis.text.x = ggplot2::element_text(size = 14),
+    axis.text.y = ggplot2::element_text(size = 14),
+    legend.position = "none"
+  ) +
+  ggplot2::labs(
+    x = "x coordinates",
+    y = "y coordinates",
+    fill = "Leiden Clusters"  # Add legend title
+  ) +
+  ggplot2::annotate(
+    "segment",
+    x = x_right,
+    xend = x_right + scale_bar_length_pixels,
+    y = y_bottom + 40,
+    yend = y_bottom + 40,
+    color = "black",
+    linewidth = 2,
+    lineend = "round"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_right + scale_bar_length_pixels / 2,
+    y = y_bottom - 40,
+    label = paste0(scale_bar_length_microns, " µm"),
+    color = "black",
+    size = 7,
+    fontface = "bold",
+    hjust = 0.5
+  )
+
+# Print the modified plot
+print(Tumouroid_4)
+
+png_path <- file.path(base_save_parameters$save_dir, "Tumouroid_4.png")
+pdf_path <- file.path(base_save_parameters$save_dir, "Tumouroid_4.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = Tumouroid_4,
+  base_height = 10,
+  base_width = 7,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = Tumouroid_4,
+  base_height = 10,
+  base_width = 7,
+  device = cairo_pdf
+)
+
+```
+
+# Tumoroid_5
+
+```{r step15_tumoroid_5}
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 100  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
+
+# Coordinates for placing the scale bar
+x_right <- 17200 - scale_bar_length_pixels - 20  # Adjusted for xlim
+y_bottom <- -24250 + 80  # Adjusted for ylim
+
+
+Tumouroid_5 <- spatInSituPlotPoints(
+  SpatialTrans_DMSO_ONTgene, 
+  background_color = "white",
+  polygon_fill = "leiden_clus",
+  polygon_fill_as_factor = TRUE,
+  show_image = TRUE,
+  save_plot = FALSE,
+  show_legend =FALSE,
+  xlim = c(14500, 17200), 
+  ylim = c(-24250, -19300)
+) +
+  ggplot2::theme_classic() +
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(color = "black"),
+    axis.title.x = ggplot2::element_text(size = 20),
+    axis.title.y = ggplot2::element_text(size = 20),
+    axis.text.x = ggplot2::element_text(size = 14),
+    axis.text.y = ggplot2::element_text(size = 14),
+    legend.position = "none"
+  ) +
+  ggplot2::labs(
+    x = "x coordinates",
+    y = "y coordinates",
+    fill = "Leiden Clusters"  # Add legend title
+  ) +
+  ggplot2::annotate(
+    "segment",
+    x = x_right,
+    xend = x_right + scale_bar_length_pixels,
+    y = y_bottom + 40,
+    yend = y_bottom + 40,
+    color = "black",
+    linewidth = 2,
+    lineend = "round"
+  ) +
+  ggplot2::annotate(
+    "text",
+    x = x_right + scale_bar_length_pixels / 2,
+    y = y_bottom - 40,
+    label = paste0(scale_bar_length_microns, " µm"),
+    color = "black",
+    size = 7,
+    fontface = "bold",
+    hjust = 0.5
+  )
+
+# Print the modified plot
+print(Tumouroid_5)
+
+png_path <- file.path(base_save_parameters$save_dir, "Tumouroid_5.png")
+pdf_path <- file.path(base_save_parameters$save_dir, "Tumouroid_5.pdf")
+
+# Save as PNG
+cowplot::save_plot(
+  filename = png_path,
+  plot = Tumouroid_5,
+  base_height = 10,
+  base_width = 7,
+  dpi = 600
+)
+
+# Save as PDF
+cowplot::save_plot(
+  filename = pdf_path,
+  plot = Tumouroid_5,
+  base_height = 10,
+  base_width = 7,
+  device = cairo_pdf
+)
+
+```
+
+## Combine Plots for A in Figure 1
+
+```{r step15_combine_tumouroids}
+library(patchwork)
+
+# Define the layout for the patchwork plot
+layout_design <- "
+AC
+BC
+DE
+"
+
+# Combine the plots using the custom layout
+combined_tumoroidPlot <- Tumouroid_1 +
+  Tumouroid_2 +
+  Tumouroid_3 +
+  Tumouroid_4 +
+  Tumouroid_5 +
+  plot_layout(design = layout_design) & 
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))  # Remove extra margins
+
+# Print the combined plot
+print(combined_tumoroidPlot)
+
+# Save the combined plot as PNG
+png_path <- file.path(base_save_parameters$save_dir, "Combined_Tumouroids_Custom.png")
+ggsave(
+  filename = png_path,
+  plot = combined_tumoroidPlot,
+  width = 20,  # Adjust width for the combined plot
+  height = 25, # Adjust height for the combined plot
+  dpi = 600
+)
+
+# Save the combined plot as PDF
+pdf_path <- file.path(base_save_parameters$save_dir, "Combined_Tumouroids_Custom.pdf")
+ggsave(
+  filename = pdf_path,
+  plot = combined_tumoroidPlot,
+  width = 20,
+  height = 25,
+  device = cairo_pdf
+)
+
+```
+
+# Interactive Region Selector for Spatial Transcriptomics (Optional)
+
+This interactive Shiny app allows you to select regions from spatial plots. Run only if needed.
+
+```{r interactive_region_selector, eval=FALSE}
+# Source the external Shiny app script for interactive region selection
+# Requires: SpatialTrans_DMSO_ONTgene object to be loaded
+source("./scripts/interactive_region_selector.R")
+```
+
+# Visium Spatial Transcriptomics Analysis WorkShop II
+
+# Step 16: Differential Expression Analysis
+
+## Scran Markers
+
+The Scran method is preferred for robust differential expression analysis, especially when addressing technical variability or differences in sequencing depth across spatial locations.
+
+Calculate the top marker genes per cluster using the scran method
+
+```{r step16_scran_markers}
+library(data.table)
+scran_markers <- findMarkers_one_vs_all(gobject = SpatialTrans_DMSO_ONTgene,
+                                       method = "scran",
+                                       expression_values = "scaled",
+                                       cluster_column = "leiden_clus",
+                                       min_feats = 10)
+
+# Filter for upregulated genes only (logFC > 0) for visualization
+scran_markers_up <- scran_markers[logFC > 0]
+
+# Get top 8 upregulated genes per cluster for heatmap/visualization
+topgenes_scran <- scran_markers_up[, head(.SD, 8), by = "cluster"]$feats
+
+# Define the file path for saving
+scran_markers_file <- file.path(supplementary_figures, "Supplementary Table S1.csv")
+
+# Save scran_markers as a CSV file
+fwrite(
+  scran_markers,
+  file = scran_markers_file
+)
+
+View(scran_markers)
+
+```
+
+### Visualize
+
+Plot the normalized expression distribution of the top expressed genes.
+
+```{r step16_violin_plot}
+
+violinPlot_scranMarker <- violinPlot(SpatialTrans_DMSO_ONTgene, 
+           feats = unique(topgenes_scran), 
+           cluster_column = "leiden_clus",
+           strip_text = 25, 
+           axis_text_x_size = 30,
+           axis_text_y_size = 15, 
+           strip_position = "right",
+           save_param = modifyList(base_save_parameters, list(base_width = 15, base_height = 30)),    # Override base width and height 
+           default_save_name = "violinPlot_scranMarker"  # Save plot with this name
+)
+           
+print(violinPlot_scranMarker)
+```
+
+# scranmarker Heatmap
+
+```{r step16_heatmap}
+# Create a custom order for the leiden clusters
+custom_order <- sort(unique(pDataDT(SpatialTrans_DMSO_ONTgene)$leiden_clus))
+
+# Create the heatmap with the custom cluster order for scran markers
+heatmap_scranMarkers <- plotMetaDataHeatmap(
+  SpatialTrans_DMSO_ONTgene, 
+  selected_feats = unique(topgenes_scran),
+  metadata_cols = "leiden_clus",
+  custom_cluster_order = custom_order,   # Apply custom cluster order
+  x_text_size = 15, 
+  y_text_size = 15,
+  save_param = modifyList(base_save_parameters, list(base_width = 7, base_height = 12)),    # Override base width and height
+  return_plot = TRUE,               # Return the plot object to display after saving
+  default_save_name = "heatmap_scranMarkers"  # Save plot with this name
+)
+
+# Display the heatmap
+print(heatmap_scranMarkers)
+       
+```
+
+### Visualize the scaled expression spatial distribution of the top expressed genes across the sample.
+
+```{r step16_spatial_dist_scran}
+Spatial_Dist_scranMarkers <- spatFeatPlot2D(SpatialTrans_DMSO_ONTgene, 
+              expression_values = "scaled",
+              feats = sort(unique(topgenes_scran)),
+              show_image = FALSE,
+              cow_n_col = 5, 
+              point_size = 2.5,
+              point_alpha = 0.7,
+              save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 20)),
+              return_plot = TRUE,
+              default_save_name = "Spatial_Dist_scranMarkers"
+              )
+print(Spatial_Dist_scranMarkers)
+          
+```
+
+```{r step16_spatial_top_scran}
+#Spatial expression patterns of the top genes changed in the clusters
+
+spatial_topscran_genes <- spatFeatPlot2D(SpatialTrans_DMSO_ONTgene, 
+               expression_values = "scaled",
+               feats = topgenes_scran[1:10],
+               show_image = TRUE, 
+               cow_n_col = 5, 
+               point_size = 2.5,
+               point_alpha = 0.7,
+               save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),    # Override base width and height
+               return_plot = TRUE,               # Return the plot object to display after saving
+               default_save_name = "spatial_topscran_genes"  # Save plot with this name
+               )
+print(spatial_topscran_genes)
+```
+
+## Enrichr analysis of the top genes changed in the clusters
+
+```{r step16_enrichr}
+# Required Libraries
+library(ggplot2)
+library(cowplot)
+library(stringr)  # To wrap text
+library(enrichR)
+
+# Get top 250 significant UPREGULATED genes per cluster (logFC > 0)
+top_genes_per_cluster <- scran_markers[logFC > 0, head(.SD, 250), by = cluster, .SDcols = "feats"]
+
+# Define Enrichr libraries of interest
+enrichr_libraries <- c("GO_Biological_Process_2023")
+
+# Initialize a list to store enrichment results
+enrichment_results <- list()
+
+# Loop over each cluster and perform enrichment
+for (cluster_id in unique(top_genes_per_cluster$cluster)) {
+  
+  # Extract the top 30 gene list for the current cluster
+  gene_list <- top_genes_per_cluster[cluster == cluster_id, feats]
+  
+  # Perform enrichment analysis using Enrichr
+  result <- enrichr(genes = gene_list, databases = enrichr_libraries)
+  
+  # Store the result for the cluster
+  enrichment_results[[cluster_id]] <- result
+  
+  # Print a message to indicate completion of each cluster
+  cat("Completed enrichment analysis for cluster:", cluster_id, "\n")
+}
+
+# Function to customize the plot and apply term wrapping
+custom_plotEnrich <- function(cluster_result, cluster_id) {
+  # Wrap the GO terms to two lines for better visibility
+  cluster_result$Term <- str_wrap(cluster_result$Term, width = 50)
+  
+  plotEnrich(
+    df = cluster_result, 
+    showTerms = 5,             # Show top 5 pathways
+    numChar = 90,              # Number of characters to show in pathway names
+    y = "Count",               # Use count as y-axis
+    orderBy = "P.value",       # Order by P-value
+    title = paste("Cluster", cluster_id)
+  ) + 
+    theme_minimal() +                                 # Use minimal theme
+    theme(
+      axis.title.y = element_blank(),                 # Remove y-axis label
+      panel.grid.major = element_blank(),             # Remove major grid
+      panel.grid.minor = element_blank(),             # Remove minor grid
+      plot.title = element_text(size = 14, face = "bold"),  # Bold title
+      axis.text.x = element_text(size = 10),          # Font size for x-axis text
+      axis.text.y = element_text(size = 10),          # Font size for y-axis text
+      panel.border = element_blank(),                 # Remove border
+      axis.line = element_line(),                     # Keep axis lines
+      axis.ticks = element_line(),                    # Keep ticks
+      plot.margin = margin(1, 1, 1, 3, "cm")          # Increase left margin to avoid cropping
+    )
+}
+
+# Create individual plots for each cluster
+plots <- list()
+for (cluster_id in unique(top_genes_per_cluster$cluster)) {
+  
+  # Extract the enrichment results for the current cluster
+  cluster_result <- enrichment_results[[cluster_id]][["GO_Biological_Process_2023"]]
+  
+  # Create the customized plot
+  p <- custom_plotEnrich(cluster_result, cluster_id)
+  
+  # Add the plot to the list
+  plots[[cluster_id]] <- p
+}
+
+# Combine all plots into one using cowplot, saved as GOBiologicalProcess_combined
+GOBiologicalProcess_combined <- plot_grid(plotlist = plots, ncol = 1) +
+  ggtitle("Top 5 GO Biological Process Pathways") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))  # Center title and adjust size
+
+# Save the combined plot as a PNG with increased width to avoid cropping
+ggsave(
+  filename = "./figures/GOBiologicalProcess_combined.png",  # Save with a unique name
+  plot = GOBiologicalProcess_combined,
+  width = 15, height = 25, dpi = 600  # Adjust width, height, and DPI as needed
+)
+
+# Display the combined plot
+print(GOBiologicalProcess_combined)
+
+
+```
+
+# Step 17: Enrichment and Deconvolution
+
+Visium spatial transcriptomics does not provide single-cell resolution, making cell type annotation a harder problem. Giotto provides several ways to calculate enrichment of specific cell-type signature gene lists.
+
+# Step 18: Spatial Expression Patterns
+
+## Patial variable genes
+
+Create a spatial network
+
+```{r step18_spatial_network}
+SpatialTrans_DMSO_ONTgene <- createSpatialNetwork(gobject = SpatialTrans_DMSO_ONTgene,
+                                     method = "kNN", 
+                                     k = 30,
+                                     maximum_distance_knn = 550,
+                                     name = "spatial_network")
+```
+
+### Sav network plot
+
+```{r step18_network_plot}
+# Function to generate and save the plot with different show_image values
+save_spatPlot2D_with_show_image <- function(show_image_value, save_name_suffix) {
+  spatPlot2D(
+    gobject = SpatialTrans_DMSO_ONTgene,  
+    show_network = TRUE,
+    network_color = "blue",
+    show_image = show_image_value, 
+    spatial_network_name = "spatial_network",
+    save_param = base_save_parameters,    # Apply the save parameters
+    return_plot = TRUE,               # Return the plot object to display after saving
+    default_save_name = paste0("Spatial_Network_k_10_knn_550_", save_name_suffix)  # Append suffix to save name
+  )
+}
+
+# Generate and save plots
+Spatial_Network_with_image <- save_spatPlot2D_with_show_image(TRUE, "with_image")
+Spatial_Network_without_image <- save_spatPlot2D_with_show_image(FALSE, "without_image")
+
+# Display the plots
+print(Spatial_Network_with_image)
+print(Spatial_Network_without_image)
+
+```
+
+## Rank binarization
+
+Rank the genes on the spatial dataset depending on whether they exhibit a spatial pattern location or not.
+
+This step may take a few minutes to run.
+
+```{r step18_rank_binarization}
+ranktest <- binSpect(SpatialTrans_DMSO_ONTgene, 
+                     bin_method = "rank",
+                     calc_hub = TRUE, 
+                     hub_min_int = 5,
+                     spatial_network_name = "spatial_network")
+
+View(ranktest)
+```
+
+```{r step18_rank_enrichr}
+# Convert ranktest to data.table (if it is not already)
+ranktest <- as.data.table(ranktest)
+
+# Filter for significant genes with p.value < 0.05
+significant_genes <- ranktest[p.value < 0.05, .(feats)]
+
+# Define Enrichr libraries of interest (you can customize this list)
+enrichr_libraries <- c( "GO_Biological_Process_2023")
+
+# Extract the gene list from the filtered data
+gene_list <- significant_genes$feats
+
+# Perform enrichment analysis using Enrichr
+enrichment_results <- enrichr(genes = gene_list, databases = enrichr_libraries)
+
+# Print the enrichment results
+View(enrichment_results)
+
+```
+
+## Visualize top results
+
+Plot the scaled expression of genes with the highest probability of being spatial genes.
+
+```{r step18_spatial_prob_genes}
+spatial_prob_genes <- spatFeatPlot2D(SpatialTrans_DMSO_ONTgene, 
+               expression_values = "scaled",
+               feats = ranktest$feats[9:16],
+               show_image = TRUE, 
+               cow_n_col = 4, 
+               point_size = 2.5,
+               point_alpha = 0.7,
+               save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),    # Override base width and height
+               return_plot = TRUE,               # Return the plot object to display after saving
+               default_save_name = "spatial_prob_9_16_genes"  # Save plot with this name
+               )
+print(spatial_prob_genes)
+```
+
+# Spatial co-expression modules
+
+### Cluster the top 500 spatial genes into 20 clusters
+
+```{r step18_spatial_coexpression}
+ext_spatial_genes <- ranktest[1:150,]$feats
+ # Use detectSpatialCorGenes function to calculate pairwise distances between genes.
+spat_cor_netw_DT <- detectSpatialCorFeats(
+    SpatialTrans_DMSO_ONTgene,
+    method = "network",
+    spatial_network_name = "spatial_network",
+    subset_feats = ext_spatial_genes)
+```
+
+## Visualize
+
+### Plot the scaled expression of the 3 genes with most similar spatial patterns to RPL32.
+
+```{r step18_spatial_corr_plot}
+# Function to identify top correlated genes and save spatial correlation plot
+generate_spatial_corr_plot <- function(gene, top_n = 8) {
+  
+  # Identify most similar spatially correlated genes for the input gene
+  top_genes <- showSpatialCorFeats(spat_cor_netw_DT, 
+                                   feats = gene, 
+                                   show_top_feats = 20)
+  
+  # Generate the spatial correlation plot and save it
+  plot <- spatFeatPlot2D(
+    SpatialTrans_DMSO_ONTgene, 
+    expression_values = "scaled",
+    feats = top_genes$variable[1:top_n],    # Use the top N correlated genes
+    cow_n_col = 4,
+    point_size = 2.5,
+    point_alpha = 0.7,
+    show_image = TRUE,                     # Show the underlying image
+    save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),    # Override base width and height
+    return_plot = TRUE,                     # Return the plot object for display
+    default_save_name = paste0("spatial_spatialCorr_", gene)  # Save with gene name
+  )
+  
+  # Print the plot (optional)
+  print(plot)
+  
+  return(plot)
+}
+
+# Example usage: Generate and save plot for the gene "MT-CO1"
+spatial_spatialCorr_LCN2 <- generate_spatial_corr_plot("MT-ND2")
+
+```
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```

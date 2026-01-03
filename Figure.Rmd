@@ -1,6 +1,35 @@
-# Figure 1
+# Manuscript Figures - TumoroidSpatialLongRead
+# Author: Dr Mustafa Elshani
+# University of St Andrews, School of Medicine, North Haugh, St Andrews, Fife, KY16 9TF, UK
+
+---
+
+#  Setup and Global Theme
+
+```{r figure_setup}
+# Publication theme settings: 14pt base, bold titles, clean grid
+theme_publication <- theme_minimal(base_size = 14) +
+theme(
+    text = element_text(family = "sans"),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+theme_set(theme_publication)
+```
+
+---
+
+# FIGURE 1 Components
+
+## 1A: Spatial Leiden Cluster Plot
+
 ```{r}
-# Create a QC plot after filtering, using the same SpatialTrans_DMSO_ONTgene object
+# Spatial plot colored by Leiden clusters - DMSO condition
 SpatPlot2_Leiden_clusters <- spatPlot2D(
   gobject = SpatialTrans_DMSO_ONTgene,  # Use the same object with statistics
   cell_color = "leiden_clus",           # Color based on the number of features (genes) per spot
@@ -16,22 +45,31 @@ SpatPlot2_Leiden_clusters <- spatPlot2D(
 
 ```
 
+## 1B: Marker Gene Heatmap by Cluster
+
 ```{r}
-# Create the heatmap
+# Heatmap of top scran marker genes across Leiden clusters
 heatmap_scranMarkers <- plotMetaDataHeatmap(
   SpatialTrans_DMSO_ONTgene, 
   selected_feats = unique(topgenes_scran),
   metadata_cols = "leiden_clus",
   custom_cluster_order = custom_order,
-  x_text_size = 22, 
-  y_text_size = 22,
+  x_text_size = 26, 
+  y_text_size = 26,
   save_param = modifyList(base_save_parameters, list(base_width = 4, base_height = 12)),
   return_plot = TRUE
 )
 
-# Remove y-axis title, change x-axis title, and change legend title
+# Remove y-axis title, change x-axis title
 heatmap_scranMarkers <- heatmap_scranMarkers +
-  labs(y = NULL, x = "Leiden Clusters", fill = "Leiden Clusters")
+  labs(y = NULL, x = "Leiden Clusters", fill = NULL) +
+  theme(
+    axis.title.x = element_text(size = 28, face = "bold"),
+    legend.key.height = unit(2, "cm"),
+    legend.key.width = unit(1, "cm"),
+    legend.text = element_text(size = 18),
+    legend.title = element_blank()
+  )
 
 # Display the heatmap
 print(heatmap_scranMarkers)
@@ -41,8 +79,10 @@ print(heatmap_scranMarkers)
 
 ```
 
+## 1C: GO Enrichment Analysis (EnrichR)
 
-EnrichR analysis
+### Run EnrichR per cluster
+
 ```{r}
 # Required Libraries
 library(ggplot2)
@@ -51,7 +91,7 @@ library(stringr)  # To wrap text
 library(enrichR)  # Assuming enrichR is used for enrichment analysis
 
 # Get top 30 significant genes per cluster
-top_genes_per_cluster <- scran_markers[, head(.SD, 200), by = cluster, .SDcols = "feats"]
+top_genes_per_cluster <- scran_markers[logFC > 0, head(.SD, 250), by = cluster, .SDcols = "feats"]
 
 # Define Enrichr libraries of interest
 enrichr_libraries <- c("GO_Biological_Process_2023")
@@ -77,15 +117,26 @@ for (cluster_id in unique(top_genes_per_cluster$cluster)) {
 
 ```
 
-Plot the enrichment plots
-
+### Plot GO Biological Process enrichment bars
 
 ```{r}
-#Modified Gene Enrichment Plot Function
+# Modified Gene Enrichment Plot Function with improved text readability
+# Added text shadow/halo effect for better contrast on colored bars
 
-# Function to customize the plot with larger white text and correct color scaling and bar order
-# Modified Gene Enrichment Plot Function with Larger Legend
-custom_plotEnrich <- function(cluster_result, cluster_id) {
+# Helper function to add text with shadow/halo for better readability
+geom_text_with_shadow <- function(mapping = NULL, data = NULL, stat = "identity",
+                                   position = "identity", ..., 
+                                   shadow_color = "black", shadow_offset = 0.3) {
+  list(
+    # Shadow layer (slightly offset dark text behind)
+    geom_text(mapping = mapping, data = data, stat = stat, position = position,
+              color = shadow_color, nudge_x = shadow_offset, nudge_y = -shadow_offset, ...),
+    # Main text layer
+    geom_text(mapping = mapping, data = data, stat = stat, position = position, ...)
+  )
+}
+
+custom_plotEnrich <- function(cluster_result, cluster_id, is_last = FALSE) {
   
   # Extract count from Overlap column (assuming format like "5/200")
   cluster_result$Count <- as.numeric(sapply(strsplit(cluster_result$Overlap, "/"), `[`, 1))
@@ -93,42 +144,80 @@ custom_plotEnrich <- function(cluster_result, cluster_id) {
   # Take top 5 terms ordered by P.value
   cluster_result <- head(cluster_result[order(cluster_result$P.value), ], 5)
   
+  # Keep full term names
+  cluster_result$Term_wrapped <- cluster_result$Term
+  
+  # Calculate font size for each term - reduce only for long terms (increased sizes)
+  cluster_result$font_size <- ifelse(
+    nchar(cluster_result$Term) > 70, 5.0,
+    ifelse(nchar(cluster_result$Term) > 55, 5.8, 6.5)
+  )
+  
   # Calculate the maximum bar width for proper spacing
   max_count <- max(cluster_result$Count, na.rm = TRUE)
   
-  # Create the plot
-  p <- ggplot(cluster_result, aes(x = Count, y = reorder(Term, -P.value))) +  # Reverse order of terms by P.value
-    # Add invisible bars to reserve space
-    geom_bar(stat = "identity", fill = "transparent", width = 0.7) +
-    # Add colored bars, using P.value directly for the fill
-    geom_bar(stat = "identity", aes(fill = P.value), width = 0.9) +
-    # Add text labels at a consistent position with increased size and white color
-    geom_text(aes(x = 0.1, label = Term), 
-              hjust = 0,
-              size = 20 / .pt,  # Convert to points for actual size 20
-              color = "white",
-              fontface = "bold",  # Make text bold
-              position = position_nudge(y = 0)) +
-    # Set proper plot limits
-    scale_x_continuous(limits = c(0, max_count * 1.2), 
+  # Extend x-axis to fit long text labels
+  max_term_length <- max(nchar(cluster_result$Term))
+  x_extension <- ifelse(max_term_length > 60, 2.0, ifelse(max_term_length > 45, 1.5, 1.3))
+  
+  # Create the plot with improved text readability
+  p <- ggplot(cluster_result, aes(x = Count, y = reorder(Term, -P.value))) +
+    # Add colored bars
+    geom_bar(stat = "identity", aes(fill = P.value), width = 0.85) +
+    # Add semi-transparent white background box behind text for readability
+    # Use x = 0 with hjust = 0 for consistent left alignment across all clusters
+    geom_label(aes(x = 0, label = Term_wrapped, size = font_size), 
+               hjust = 0,
+               color = "grey10",
+               fontface = "bold",
+               fill = alpha("white", 0.75),
+               label.padding = unit(0.35, "lines"),
+               label.r = unit(0.15, "lines"),  # Rounded corners
+               linewidth = 0,  # No border
+               position = position_nudge(x = 0.1, y = 0)) +
+    scale_size_identity() +  # Use the calculated font sizes directly
+    # Set proper plot limits - extended to fit text
+    scale_x_continuous(limits = c(0, max_count * x_extension), 
                        expand = c(0, 0)) +
     # Color scale for P-values: smaller p-values as red, larger as blue
-    scale_fill_gradient(low = "red", high = "blue", guide = "colorbar") + 
+    # Use consistent scientific notation with superscript for legend labels
+    scale_fill_gradient(low = "#D73027", high = "#4575B4", 
+                        name = "P-value",
+                        breaks = function(x) seq(min(x), max(x), length.out = 4),
+                        labels = function(x) {
+                          sapply(x, function(val) {
+                            if (val == 0) return("0")
+                            exp_val <- floor(log10(val))
+                            mantissa <- val / 10^exp_val
+                            # Format as "N×10⁻ˣ" with superscript
+                            paste0(format(round(mantissa, 1), nsmall = 1), "×10", 
+                                   ifelse(exp_val < 0, "⁻", ""), 
+                                   # Convert digits to superscript
+                                   gsub("0", "⁰", gsub("1", "¹", gsub("2", "²", gsub("3", "³", 
+                                   gsub("4", "⁴", gsub("5", "⁵", gsub("6", "⁶", gsub("7", "⁷",
+                                   gsub("8", "⁸", gsub("9", "⁹", as.character(abs(exp_val)))))))))))))
+                          })
+                        },
+                        guide = guide_colorbar(barwidth = 2, barheight = 10, nbin = 100)) + 
     labs(title = paste("Cluster", cluster_id),
-         x = "Gene Count",
-         fill = "P-value") +  # Update legend label to "P-value"
-    theme_minimal() +
+         x = if(is_last) "Gene Count" else NULL) +
+    theme_minimal(base_size = 14) +
     theme(
       axis.text.y = element_blank(),
       axis.title.y = element_blank(),
-      panel.grid = element_blank(),
-      plot.title = element_text(size = 17, face = "bold"),
-      axis.text.x = element_text(size = 8),
-      axis.title.x = element_text(size = 12),
+      axis.ticks.y = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(size = 22, face = "bold", hjust = 0),
+      axis.text.x = element_text(size = 18, color = "grey20"),
+      axis.title.x = element_text(size = 26, face = "bold"),
       legend.position = "right",
-      legend.key.size = unit(2, "lines"),  # Increase legend key size
-      legend.text = element_text(size = 10),  # Increase legend text size
-      legend.title = element_text(size = 12)  # Increase legend title size
+      legend.justification = c(0, 1),  # Align legends at top-left of legend box
+      legend.key.size = unit(2, "lines"),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 16, face = "bold"),
+      legend.box.margin = margin(0, 0, 0, 0),
+      plot.margin = margin(10, 15, 10, 10)
     )
   
   return(p)
@@ -136,10 +225,13 @@ custom_plotEnrich <- function(cluster_result, cluster_id) {
 
 # Create plots with error handling
 plots <- list()
-for (cluster_id in names(enrichment_results)) {
+cluster_names <- names(enrichment_results)
+for (i in seq_along(cluster_names)) {
+  cluster_id <- cluster_names[i]
   cluster_result <- enrichment_results[[cluster_id]][["GO_Biological_Process_2023"]]
+  is_last <- (i == length(cluster_names))
   plot <- tryCatch({
-    custom_plotEnrich(cluster_result, cluster_id)
+    custom_plotEnrich(cluster_result, cluster_id, is_last = is_last)
   }, error = function(e) {
     message(sprintf("Error in cluster %s: %s", cluster_id, e$message))
     return(NULL)
@@ -175,16 +267,17 @@ if (length(plots) > 0) {
       ),
     GOBiologicalProcess_combined,
     ncol = 1, 
-    rel_heights = c(0.1, 1)  # Adjust the relative height of the title
+    rel_heights = c(0.04, 1)  # Reduced title height
   )
 
-  # Save the plot with the title
+  # Save the plot with the title - increased DPI for publication
   ggsave(
     filename = "./figures/GOBiologicalProcess_combined.png",
     plot = GOBiologicalProcess_combined,
-    width = 15, 
-    height = 5 * length(plots) + 1,  # Adjust height based on number of plots and space for title
-    dpi = 600
+    width = 16, 
+    height = 5 * length(plots) + 1.5,  # Adjust height based on number of plots
+    dpi = 600,
+    bg = "white"  # Ensure white background
   )
   
   # Display the combined plot with title (optional)
@@ -197,7 +290,7 @@ print(GOBiologicalProcess_combined)
 
 ```
 
-#  Save the enrichment result analysis 
+### Save enrichment results (Supplementary Table S2)
 
 ```{r}
 # Initialize an empty list to store flattened results
@@ -236,118 +329,210 @@ message("Enrichment results saved to: ", enrichment_results_file)
 
 ```
 
+---
+
+## **FIGURE 1 Assembly** → `./figures/paper_figures/Figure_1.png`
+
 ```{r}
-# Create the final combined figure
+# Combine panels A (spatial clusters), B (heatmap), C (GO enrichment)
 combined_Figure1 <- plot_grid(
   combined_tumoroidPlot, 
   heatmap_scranMarkers,
-  GOBiologicalProcess_combined,  # Updated GO Biological Process plot with white background
-  labels = c("A", "B", "C"),     # Label plots as A, B, C
-  label_size = 30,               # Increase label size for better visibility
-  ncol = 3,                      # Arrange plots in three columns
-  rel_widths = c(0.8, 0.3, 0.5)    # Adjust relative widths for better balance
+  GOBiologicalProcess_combined,
+  labels = c("A", "B", "C"),
+  label_size = 28,
+  label_fontface = "bold",
+  label_colour = "grey20",
+  label_x = c(0, -0.15, 0),   # Move B further left
+  label_y = 1,      # Top edge of each panel
+  hjust = -0.2,     # Shift label slightly right
+  vjust = 1.5,      # Shift label slightly down from top
+  ncol = 3,
+  rel_widths = c(0.8, 0.3, 0.55)
 )
 
-# Save the combined plot as a PNG file with 600 dpi resolution
+# Save the combined plot as a PNG file with high resolution
 ggsave(
-  filename = "./figures/paper_figures/Figure_1.png",  # Save plot with a unique name
+  filename = "./figures/paper_figures/Figure_1.png",
   plot = combined_Figure1,
-  width = 35,                  # Width of the figure in inches
-  height = 22,                  # Height of the figure in inches
-  dpi = 600                    # Set the resolution to 600 dpi
+  width = 36,
+  height = 24,
+  dpi = 600,
+  bg = "white"
 )
 
-# Display the combined plot (optional)
+# Also save as PDF for vector graphics (journals often prefer this)
+ggsave(
+  filename = "./figures/paper_figures/Figure_1.pdf",
+  plot = combined_Figure1,
+  width = 36,
+  height = 24,
+  device = cairo_pdf
+)
+
+# Display the combined plot
 print(combined_Figure1)
 
 
 ```
 
+---
 
-# Figure 2
+# FIGURE 2: Top Marker Gene Spatial Expression (DMSO)
+
+## Helper function: spatial feature plot workaround
+
 ```{r}
-# Extract top 5 genes by ranking for cluster 2
-top_5_cluster_2 <- scran_markers[cluster == "2"][order(Top)][1:5]
+# Custom wrapper for spatInSituPlotPoints to plot expression per feature
+spatinsitu_feat_workaround <- function(
+        gobject, feat, 
+        expression_values = "scaled", 
+        spat_unit = NULL, 
+        feat_type = NULL, 
+        ...) {
+    expr_table <- spatValues(gobject,
+                             spat_unit = spat_unit, 
+                             feat_type = feat_type,
+                             expression_values = expression_values,
+                             feats = feat)
+    gobject <- addCellMetadata(gobject,
+                               spat_unit = spat_unit,
+                               feat_type = feat_type,
+                               new_metadata = expr_table,
+                               by_column = TRUE)
+    p <- list(
+        gobject = gobject,
+        polygon_fill = feat,
+        ...
+    )
+    do.call(spatInSituPlotPoints, p)
+}
+```
 
-# Extract top 5 genes by ranking for cluster 3
-top_5_cluster_3 <- scran_markers[cluster == "3"][order(Top)][1:5]
+## **FIGURE 2 Assembly** → `./figures/paper_figures/figure_2.png`
+### Subset region: top 10 scran marker genes (5 per column)
 
-# Combine the top 5 genes from both clusters
-topgenes_scran_5_clus2_3 <- rbind(top_5_cluster_2, top_5_cluster_3)$feats
+```{r}
+# Required Libraries
+library(ggplot2)
+library(patchwork)
 
-# Extract the top 8 genes for cluster 4
-#Spatial expression patterns of the top genes changed in the clusters
+# Define the list of genes
+genes <- c("TTTY14", "MT-ND4", "MUC1", "MT-ND3", "TACSTD2", "MT-ATP6", "PDZK1IP1", "MT-ATP8", "MMP7", "COX7B")
 
-# Define the plot object
-spatial_topscran_genes <- spatFeatPlot2D(SpatialTrans_DMSO_ONTgene, 
-               expression_values = "scaled",
-               feats = topgenes_scran_5_clus2_3,
-               show_image = TRUE, 
-               cow_n_col = 5, 
-               point_size = 2.5,
-               point_alpha = 0.7,
-               save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),    # Override base width and height
-               return_plot = TRUE,               # Return the plot object to display after saving
-               save_plot = FALSE,                # Disable auto-save in the function
-               default_save_name = "spatial_topscran_genes"  # Save plot with this name
-)
+# Define the fixed scale bar length in microns
+scale_bar_length_microns <- 150  
+scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
 
-# Save the plot as a PNG with 600 DPI
+# Coordinates for placing the scale bar
+x_right <- 22000 - scale_bar_length_pixels - 20  # Adjusted for xlim
+y_bottom <- -17200 + 80  # Adjusted for ylim
+
+# List to store plots
+gene_plots <- list()
+
+# Generate plots for each gene
+for (gene in genes) {
+  # Generate the plot for the current gene
+  gene_plot <- spatinsitu_feat_workaround(
+      SpatialTrans_DMSO_ONTgene, 
+      feat =  c(gene),
+      show_image = TRUE, 
+      image_name = "image",
+      return_plot = TRUE,
+      save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),
+      save_plot = FALSE,
+      polygon_alpha = 0.7,
+      polygon_line_size = 0.1,
+      polygon_color = "#333030",
+      background_color = "white", 
+      xlim = c(13600, 22000), 
+      ylim = c(-17200, -13800)
+  ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      axis.line = ggplot2::element_line(color = "black", linewidth = 0.8),
+      axis.title.x = ggplot2::element_text(size = 14),
+      axis.title.y = ggplot2::element_text(size = 14),
+      axis.text.x = ggplot2::element_text(size = 7),
+      axis.text.y = ggplot2::element_text(size = 7, angle = 90, hjust = 0.5),
+      plot.title = ggplot2::element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.title = ggplot2::element_text(size = 14, face = "bold"),
+      legend.text = ggplot2::element_text(size = 12)
+    ) +
+    ggplot2::labs(
+      x = "x coordinates",
+      y = "y coordinates",
+      title = gene  # Use the current gene name as the title
+    ) +
+    ggplot2::annotate(
+      "segment",
+      x = x_right,
+      xend = x_right + scale_bar_length_pixels,
+      y = y_bottom + 250,
+      yend = y_bottom + 250,
+      color = "black",
+      linewidth = 0.8,
+      lineend = "round"
+    ) +
+    ggplot2::annotate(
+      "text",
+      x = x_right + scale_bar_length_pixels / 2,
+      y = y_bottom - 20,
+      label = paste0(scale_bar_length_microns, " µm"),
+      color = "black",
+      size = 3,
+      fontface = "bold",
+      hjust = 0.5
+    )
+  
+  # Save the plot to the list
+  gene_plots[[gene]] <- gene_plot
+  
+  # Save the individual plot as an image
+  ggsave(
+    filename = paste0("./results/Giotto_DMSO_results/ONTgene/", gene, "_spatial_expression.png"),
+    plot = gene_plot,
+    width = 20,
+    height = 10,
+    dpi = 600
+  )
+}
+
+# Split the plots into two columns
+column1_genes <- c("TTTY14", "MUC1", "TACSTD2", "PDZK1IP1", "MMP7")
+column2_genes <- c("MT-ND4", "MT-ND3", "MT-ATP6", "MT-ATP8", "COX7B")
+
+# Combine plots into two columns
+final_grid <- (patchwork::wrap_plots(gene_plots[column1_genes], ncol = 1) | 
+               patchwork::wrap_plots(gene_plots[column2_genes], ncol = 1))
+
+# Save the combined grid as an image
+combined_save_path <- "./figures/paper_figures/figure_2.png"
 ggsave(
-  filename = "./figures/figure_2.png",     # Path and filename
-  plot = spatial_topscran_genes,           # Plot object
-  width = 20, height = 10,                 # Width and height
-  dpi = 600                                # Set DPI to 600
+  filename = combined_save_path,
+  plot = final_grid,
+  width = 10,
+  height = 11, 
+  dpi = 600,
+  bg = "white"
 )
 
-# Display the plot
-print(spatial_topscran_genes)
+# Also save as PDF
+ggsave(
+  filename = "./figures/paper_figures/figure_2.pdf",
+  plot = final_grid,
+  width = 10,
+  height = 11, 
+  device = cairo_pdf
+)
+
+# Print the combined grid
+print(final_grid)
 
 ```
 
-# Plotting using `spatFeatPlot2D()` Cannot add scale bar or probaarly crop
-
-```{r}
-
-SpatialTrans_DMSO_ONTgene_subset <- subsetGiottoLocs(SpatialTrans_DMSO_ONTgene,
-x_min = 12900,
-x_max = 22400,
-y_min =-17200,
-y_max =-14000
-)
-
-# Define the custom list of genes using c()
-custom_genes <- c("TTTY14", "MT-ND4",
-                  "MUC1", "MT-ND3",
-                  "TACSTD2", "MT-ATP6",
-                  "PDZK1IP1","MT-ATP8",
-                   "MMP7", "COX7B")
-
-# Define the plot object
-spatial_topscran_genes <- spatFeatPlot2D(SpatialTrans_DMSO_ONTgene_subset, 
-               expression_values = "scaled",
-               feats = custom_genes,
-               show_image = TRUE, 
-               cow_n_col = 2, 
-               point_size = 4.5,
-               point_alpha = 0.7,
-               save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),    # Override base width and height
-               return_plot = TRUE,               # Return the plot object to display after saving
-               save_plot = FALSE
-)
-
-# Save the plot as a PNG with 600 DPI
-ggsave(
-  filename = "./figures/paper_figures/figure_2.png",     # Path and filename
-  plot = spatial_topscran_genes,           # Plot object
-  width = 10, height = 11,                 # Width and height
-  dpi = 600                                # Set DPI to 600
-)
-
-# Display the plot
-print(spatial_topscran_genes)
-
-```
+## Supplementary: Whole-section spatial plots (same genes)
 
 ```{r}
 # Define the custom list of genes using c()
@@ -379,140 +564,11 @@ ggsave(
 print(spatial_topscran_genes)
 ```
 
-# Subset and plots using modified `spatInSituPlotPoints`
-```{r}
-spatinsitu_feat_workaround <- function(
-        gobject, feat, 
-        expression_values = "scaled", 
-        spat_unit = NULL, 
-        feat_type = NULL, 
-        ...) {
-    expr_table <- spatValues(gobject,
-                             spat_unit = spat_unit, 
-                             feat_type = feat_type,
-                             expression_values = expression_values,
-                             feats = feat)
-    gobject <- addCellMetadata(gobject,
-                               spat_unit = spat_unit,
-                               feat_type = feat_type,
-                               new_metadata = expr_table,
-                               by_column = TRUE)
-    p <- list(
-        gobject = gobject,
-        polygon_fill = feat,
-        ...
-    )
-    do.call(spatInSituPlotPoints, p)
-}
-```
+---
 
+# FIGURE 4: Differential Expression - DMSO vs NUC-7738
 
-```{r}
-# Required Libraries
-library(ggplot2)
-library(patchwork)
-
-# Define the list of genes
-genes <- c("TTTY14", "MT-ND4", "MUC1", "MT-ND3", "TACSTD2", "MT-ATP6", "PDZK1IP1", "MT-ATP8", "MMP7", "COX7B")
-
-# Define the fixed scale bar length in microns
-scale_bar_length_microns <- 100  
-scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
-
-# Coordinates for placing the scale bar
-x_right <- 22000 - scale_bar_length_pixels - 20  # Adjusted for xlim
-y_bottom <- -17200 + 80  # Adjusted for ylim
-
-# List to store plots
-gene_plots <- list()
-
-# Generate plots for each gene
-for (gene in genes) {
-  # Generate the plot for the current gene
-  gene_plot <- spatinsitu_feat_workaround(
-      SpatialTrans_DMSO_ONTgene, 
-      feat =  c(gene),
-      show_image = TRUE, 
-      image_name = "image",
-      return_plot = TRUE,
-      save_param = modifyList(base_save_parameters, list(base_width = 20, base_height = 10)),
-      save_plot = FALSE,
-      polygon_alpha = 0.7,
-      polygon_line_size = 0.1,
-      polygon_color = "#333030",
-      background_color = "white", 
-      xlim = c(13600, 22000), 
-      ylim = c(-17200, -13800)
-  ) +
-    ggplot2::theme(
-      axis.line = ggplot2::element_line(color = "black"),
-      axis.title.x = ggplot2::element_text(size = 10),
-      axis.title.y = ggplot2::element_text(size = 10),
-      plot.title = ggplot2::element_text(size = 12, hjust = 0.5)  # Title formatting
-    ) +
-    ggplot2::labs(
-      x = "x coordinates",
-      y = "y coordinates",
-      title = gene  # Use the current gene name as the title
-    ) +
-    ggplot2::annotate(
-      "segment",
-      x = x_right,
-      xend = x_right + scale_bar_length_pixels,
-      y = y_bottom + 110,
-      yend = y_bottom + 110,
-      color = "black",
-      linewidth = 0.8,
-      lineend = "round"
-    ) +
-    ggplot2::annotate(
-      "text",
-      x = x_right + scale_bar_length_pixels / 2,
-      y = y_bottom - 20,
-      label = paste0(scale_bar_length_microns, " µm"),
-      color = "black",
-      size = 2,
-      hjust = 0.5
-    )
-  
-  # Save the plot to the list
-  gene_plots[[gene]] <- gene_plot
-  
-  # Save the individual plot as an image
-  ggsave(
-    filename = paste0("./results/Giotto_DMSO_results/ONTgene/", gene, "_spatial_expression.png"),
-    plot = gene_plot,
-    width = 20,
-    height = 10,
-    dpi = 600
-  )
-}
-
-# Split the plots into two columns
-column1_genes <- c("TTTY14", "MUC1", "TACSTD2", "PDZK1IP1", "MMP7")
-column2_genes <- c("MT-ND4", "MT-ND3", "MT-ATP6", "MT-ATP8", "COX7B")
-
-# Combine plots into two columns
-final_grid <- (patchwork::wrap_plots(gene_plots[column1_genes], ncol = 1) | 
-               patchwork::wrap_plots(gene_plots[column2_genes], ncol = 1))
-
-# Save the combined grid as an image
-combined_save_path <- "./figures/paper_figures/figure_2.png"
-ggsave(
-  filename = combined_save_path,
-  plot = final_grid,
-  width = 10,  # Adjust dimensions as needed
-  height = 11, 
-  dpi = 600
-)
-
-# Print the combined grid
-print(final_grid)
-
-```
-
-# Plot the differntial expression genes Control vs NUC7738
-## Plot DMSO part
+## 4A: DMSO spatial plots (6 genes: SNHG25, HLA-B, B2M, MT-CO1, RPL37, POLR2L)
 
 ```{r}
 # Required Libraries
@@ -523,7 +579,7 @@ library(patchwork)
 genes <- c("SNHG25", "HLA-B", "B2M", "MT-CO1", "RPL37", "POLR2L")
 
 # Define the fixed scale bar length in microns
-scale_bar_length_microns <- 100  
+scale_bar_length_microns <- 150  
 scale_bar_length_pixels <- scale_bar_length_microns / microns_per_pixel
 
 # Initialize the gene_plots list
@@ -549,13 +605,17 @@ for (gene in genes) {
     xlim = c(13600, 22000), 
     ylim = c(-17200, -13800)
   ) +
+    ggplot2::theme_classic() +
     ggplot2::theme(
-      axis.line = ggplot2::element_line(color = "black"),
-      axis.title.x = ggplot2::element_text(size = 10),
-      axis.title.y = ggplot2::element_text(size = 10),
-      plot.title = ggplot2::element_text(size = 12, hjust = 0.5),  # Title formatting
-      legend.position = "none"  # Explicitly remove the legend
+      axis.line = ggplot2::element_line(color = "black", linewidth = 0.8),
+      axis.title.x = ggplot2::element_text(size = 9, face = "bold"),
+      axis.title.y = ggplot2::element_text(size = 9, face = "bold"),
+      axis.text.x = ggplot2::element_text(size = 6),
+      axis.text.y = ggplot2::element_text(size = 6, angle = 90, vjust = 0.5, hjust = 0.5),
+      legend.position = "none",
+      legend.title = ggplot2::element_blank()
     ) +
+    ggplot2::scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-2, 2), oob = scales::squish, name = NULL) +
     ggplot2::labs(
       x = "x coordinates",
       y = "y coordinates"
@@ -564,19 +624,20 @@ for (gene in genes) {
       "segment",
       x = x_right,
       xend = x_right + scale_bar_length_pixels,
-      y = y_bottom + 110,
-      yend = y_bottom + 110,
+      y = y_bottom + 200,
+      yend = y_bottom + 200,
       color = "black",
-      linewidth = 0.8,
+      linewidth = 1.2,
       lineend = "round"
     ) +
     ggplot2::annotate(
       "text",
       x = x_right + scale_bar_length_pixels / 2,
-      y = y_bottom - 20,
+      y = y_bottom - 50,
       label = paste0(scale_bar_length_microns, " µm"),
       color = "black",
-      size = 2,
+      size = 3.5,
+      fontface = "bold",
       hjust = 0.5
     )
   
@@ -595,8 +656,7 @@ for (gene in genes) {
 
 ```
 
-
-## Plot NUC7738 part
+## 4A: NUC-7738 spatial plots (same 6 genes)
 
 ```{r}
 # Plot NUC7738 part
@@ -618,12 +678,16 @@ for (gene in genes) {
     xlim = c(40900, 49900), 
     ylim = c(-25200, -21500)
   ) +
+    ggplot2::theme_classic() +
     ggplot2::theme(
-      axis.line = ggplot2::element_line(color = "black"),
-      axis.title.x = ggplot2::element_text(size = 10),
-      axis.title.y = ggplot2::element_text(size = 10),
-      plot.title = ggplot2::element_text(size = 12, hjust = 0.5)  # Title formatting
+      axis.line = ggplot2::element_line(color = "black", linewidth = 0.8),
+      axis.title.x = ggplot2::element_text(size = 9, face = "bold"),
+      axis.title.y = ggplot2::element_text(size = 9, face = "bold"),
+      axis.text.x = ggplot2::element_text(size = 6),
+      axis.text.y = ggplot2::element_text(size = 6, angle = 90, vjust = 0.5, hjust = 0.5),
+      legend.title = ggplot2::element_blank()
     ) +
+    ggplot2::scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-2, 2), oob = scales::squish, name = NULL) +
     ggplot2::labs(
       x = "x coordinates",
       y = "y coordinates"
@@ -632,19 +696,20 @@ for (gene in genes) {
       "segment",
       x = x_right,
       xend = x_right + scale_bar_length_pixels,
-      y = y_bottom + 110,
-      yend = y_bottom + 110,
+      y = y_bottom + 200,
+      yend = y_bottom + 200,
       color = "black",
-      linewidth = 0.8,
+      linewidth = 1.2,
       lineend = "round"
     ) +
     ggplot2::annotate(
       "text",
       x = x_right + scale_bar_length_pixels / 2,
-      y = y_bottom - 20,
+      y = y_bottom - 50,
       label = paste0(scale_bar_length_microns, " µm"),
       color = "black",
-      size = 2,
+      size = 3.5,
+      fontface = "bold",
       hjust = 0.5
     )
   gene_plots[[paste0("NUC7738_", gene)]] <- nuc7738_plot
@@ -659,6 +724,7 @@ for (gene in genes) {
 
 ```
 
+## Intermediate: Spatial grid layout (DMSO | NUC-7738 per row)
 
 ```{r}
 library(ggplot2)
@@ -707,28 +773,204 @@ column_labels <- wrap_plots(
 
 # Combine column labels with the plot grid
 final_grid <- column_labels / labeled_grid +
-  plot_layout(heights = c(0.02, 1))  # Adjust height for column labels
-
-# Save the final grid with column and row labels
-combined_save_path <- "./figures/paper_figures/figure_4_6genes.png"
-ggsave(
-  filename = combined_save_path,
-  plot = final_grid,
-  width = 12,  # Adjust width to balance labels and plots
-  height = 16, # Adjust height to fit all gene pairs
-  dpi = 600
-)
+  plot_layout(heights = c(0.05, 1))  # Increased height for column labels
 
 # Print the final grid
 print(final_grid)
 ```
 
+## 4B: Violin plots - expression comparison with scran p-values
 
+```{r}
+library(ggplot2)
+library(patchwork)
+library(Giotto)
 
-# Plot whole section
+# Extract expression data from the Giotto object
+expr_matrix <- getExpression(SpatialTrans_combined_ONTgene, values = "normalized", output = "matrix")
 
-# Plot the differntial expression genes Control vs NUC7738
-## Plot DMSO part
+# Get cell metadata to identify condition (DMSO vs NUC7738)
+cell_meta <- pDataDT(SpatialTrans_combined_ONTgene)
+
+# Identify which cells belong to DMSO vs NUC7738 based on list_ID or other metadata
+cell_meta$condition <- ifelse(grepl("DMSO|dmso", cell_meta$list_ID, ignore.case = TRUE), "DMSO", "NUC-7738")
+
+# Create a data frame for violin plots with condition (using all 6 genes from 'genes' variable)
+violin_data <- data.frame()
+for (gene in genes) {
+  if (gene %in% rownames(expr_matrix)) {
+    gene_expr <- as.numeric(expr_matrix[gene, ])
+    temp_df <- data.frame(
+      gene = gene,
+      expression = gene_expr,
+      cell_id = colnames(expr_matrix),
+      condition = cell_meta$condition
+    )
+    violin_data <- rbind(violin_data, temp_df)
+  }
+}
+
+# Set gene and condition as factors (maintain order from genes variable)
+violin_data$gene <- factor(violin_data$gene, levels = genes)
+violin_data$condition <- factor(violin_data$condition, levels = c("DMSO", "NUC-7738"))
+
+# Function to get significance stars
+get_stars <- function(p) {
+  if (is.na(p)) return("")
+  if (p < 1e-5) return("***")
+  else if (p < 1e-3) return("**")
+  else if (p < 0.05) return("*")
+  else return("ns")
+}
+
+# Create individual violin plots for each gene (DMSO vs NUC7738)
+violin_plot_list <- lapply(seq_along(genes), function(i) {
+  gene <- genes[i]
+  gene_data <- violin_data[violin_data$gene == gene, ]
+  
+  # Get max expression for positioning the significance bar
+  max_expr <- max(gene_data$expression, na.rm = TRUE)
+  
+  # Get p-value from scran_results dataframe
+  p_val <- scran_results[feats == gene, p.value][1]
+  stars <- get_stars(p_val)
+  
+  p <- ggplot(gene_data, aes(x = condition, y = expression, fill = condition)) +
+    geom_violin(trim = FALSE, alpha = 0.7, scale = "width") +
+    geom_jitter(width = 0.15, size = 0.3, alpha = 0.3) +
+    geom_boxplot(width = 0.15, fill = "white", outlier.shape = NA, alpha = 0.8) +
+    scale_fill_manual(values = c("DMSO" = "#377EB8", "NUC-7738" = "#FF7F00")) +
+    # Add significance bar (positioned higher above plots)
+    annotate("segment", x = 1, xend = 2, y = max_expr * 1.20, yend = max_expr * 1.20, linewidth = 0.5) +
+    annotate("segment", x = 1, xend = 1, y = max_expr * 1.15, yend = max_expr * 1.20, linewidth = 0.5) +
+    annotate("segment", x = 2, xend = 2, y = max_expr * 1.15, yend = max_expr * 1.20, linewidth = 0.5) +
+    annotate("text", x = 1.5, y = max_expr * 1.26, label = stars, size = 3, fontface = "bold") +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.32))) +
+    theme_classic() +
+    theme(
+      axis.line = element_line(color = "black", linewidth = 0.8),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 10, face = "bold"),
+      axis.text.x = element_text(size = 12, face = "bold"),
+      axis.text.y = element_text(size = 6),
+      legend.position = "none",
+      plot.margin = margin(2, 2, 2, 2)
+    ) +
+    labs(y = "Norm. Expr.")
+  
+  return(p)
+})
+
+# Name the list
+names(violin_plot_list) <- genes
+
+# Combine violin plots into one column (6 rows)
+violin_plots_combined <- wrap_plots(violin_plot_list, ncol = 1)
+
+# Display violin plots (not saving intermediate)
+print(violin_plots_combined)
+```
+
+---
+
+## **FIGURE 4 Assembly** → `./figures/paper_figures/figure_4.png`
+### Combined: A (spatial DMSO + NUC7738) | B (violin with significance)
+
+```{r}
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+
+# Create combined rows: gene label | DMSO spatial | NUC7738 spatial | violin plot
+combined_rows_with_violin <- lapply(seq_along(genes), function(i) {
+  gene <- genes[i]
+  
+  # Get the spatial plots
+  dmso_plot <- gene_plots[[paste0("DMSO_", gene)]]
+  nuc7738_plot <- gene_plots[[paste0("NUC7738_", gene)]]
+  
+  # Get the violin plot
+  violin_plot <- violin_plot_list[[gene]]
+  
+  # Create gene label
+  gene_label <- ggplot() +
+    annotate("text", x = 0.5, y = 0.5, label = gene, size = 6, fontface = "bold", angle = 90) +
+    theme_void() +
+    theme(plot.margin = margin(0, 0, 0, 0))
+  
+  # Combine: label | DMSO | NUC7738 | violin
+  row_plot <- wrap_plots(gene_label, dmso_plot, nuc7738_plot, violin_plot, 
+                         ncol = 4, widths = c(0.02, 0.38, 0.38, 0.22))
+  return(row_plot)
+})
+
+# Stack all rows
+all_rows <- wrap_plots(combined_rows_with_violin, ncol = 1)
+
+# Create column headers with A and B labels
+header_spacer <- ggplot() + theme_void()
+header_dmso <- ggplot() +
+  annotate("text", x = 0.5, y = 0.5, label = "Control (DMSO)", size = 7, fontface = "bold") +
+  theme_void()
+header_nuc <- ggplot() +
+  annotate("text", x = 0.5, y = 0.5, label = "NUC-7738", size = 7, fontface = "bold") +
+  theme_void()
+header_violin <- ggplot() + theme_void()
+
+column_headers <- wrap_plots(header_spacer, header_dmso, header_nuc, header_violin,
+                             ncol = 4, widths = c(0.02, 0.38, 0.38, 0.22))
+
+# Add A label to spatial section and B label to violin section
+label_A <- ggplot() +
+  annotate("text", x = 0, y = 0.5, label = "A", size = 8, fontface = "bold", hjust = 0) +
+  xlim(0, 1) + ylim(0, 1) +
+  theme_void() +
+  theme(plot.margin = margin(0, 0, 0, 5))
+
+label_B <- ggplot() +
+  annotate("text", x = 0, y = 0.5, label = "B", size = 8, fontface = "bold", hjust = 0) +
+  xlim(0, 1) + ylim(0, 1) +
+  theme_void() +
+  theme(plot.margin = margin(0, 0, 0, 5))
+
+# Create header row with A and B labels
+header_with_labels <- wrap_plots(
+  label_A, header_dmso, header_nuc, label_B,
+  ncol = 4, widths = c(0.02, 0.38, 0.38, 0.22)
+)
+
+# Combine headers with rows
+figure_4_combined <- header_with_labels / all_rows +
+  plot_layout(heights = c(0.04, 1))
+
+# Save the combined Figure 4
+ggsave(
+  filename = "./figures/paper_figures/figure_4.png",
+  plot = figure_4_combined,
+  width = 12,
+  height = 14,
+  dpi = 600,
+  bg = "white"
+)
+
+# Also save as PDF
+ggsave(
+  filename = "./figures/paper_figures/figure_4.pdf",
+  plot = figure_4_combined,
+  width = 12,
+  height = 14,
+  device = cairo_pdf
+)
+
+# Print the combined figure
+print(figure_4_combined)
+```
+
+---
+
+# Supplementary: Whole-Section Spatial Plots (DMSO vs NUC-7738)
+
+## DMSO whole-section (MT-CO1, RPL37, POLR2L)
 
 ```{r}
 # Required Libraries
@@ -765,13 +1007,17 @@ for (gene in genes) {
     xlim = c(13800, 23000), 
     ylim = c(-22200, -8500)
   ) +
+    ggplot2::theme_classic() +
     ggplot2::theme(
-      axis.line = ggplot2::element_line(color = "black"),
-      axis.title.x = ggplot2::element_text(size = 10),
-      axis.title.y = ggplot2::element_text(size = 10),
-      plot.title = ggplot2::element_text(size = 12, hjust = 0.5),  # Title formatting
-      legend.position = "none"  # Explicitly remove the legend
+      axis.line = ggplot2::element_line(color = "black", linewidth = 0.8),
+      axis.title.x = ggplot2::element_text(size = 10, face = "bold"),
+      axis.title.y = ggplot2::element_text(size = 10, face = "bold"),
+      axis.text.x = ggplot2::element_text(size = 6),
+      axis.text.y = ggplot2::element_text(size = 6, angle = 90, vjust = 0.5, hjust = 0.5),
+      legend.position = "none",
+      legend.title = ggplot2::element_blank()
     ) +
+    ggplot2::scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-2, 2), oob = scales::squish, name = NULL) +
     ggplot2::labs(
       x = "x coordinates",
       y = "y coordinates"
@@ -799,10 +1045,10 @@ for (gene in genes) {
   # Add to the gene_plots list
   gene_plots[[paste0("DMSO_", gene)]] <- dmso_plot
 
-  # Save the individual plot
+  # Save the individual plot to supplementary folder
   ggsave(
-    filename = paste0("./results/SpatialTrans_combined_ONTgene/ONTgene/", gene, "_DMSO_spatial_expression_whole.png"),
-    plot = dmso_plot,  # Corrected variable name
+    filename = paste0("./figures/paper_figures/supplementary/", gene, "_DMSO_spatial_expression_whole.png"),
+    plot = dmso_plot,
     width = 20,
     height = 10,
     dpi = 600
@@ -811,8 +1057,7 @@ for (gene in genes) {
 
 ```
 
-
-## Plot NUC7738 part
+## NUC-7738 whole-section (same 3 genes)
 
 ```{r}
 # Plot NUC7738 part
@@ -834,12 +1079,16 @@ for (gene in genes) {
     xlim = c(40900, 51900), 
     ylim = c(-26500, -10500)
   ) +
+    ggplot2::theme_classic() +
     ggplot2::theme(
-      axis.line = ggplot2::element_line(color = "black"),
-      axis.title.x = ggplot2::element_text(size = 10),
-      axis.title.y = ggplot2::element_text(size = 10),
-      plot.title = ggplot2::element_text(size = 12, hjust = 0.5)  # Title formatting
+      axis.line = ggplot2::element_line(color = "black", linewidth = 0.8),
+      axis.title.x = ggplot2::element_text(size = 10, face = "bold"),
+      axis.title.y = ggplot2::element_text(size = 10, face = "bold"),
+      axis.text.x = ggplot2::element_text(size = 6),
+      axis.text.y = ggplot2::element_text(size = 6, angle = 90, vjust = 0.5, hjust = 0.5),
+      legend.title = ggplot2::element_blank()
     ) +
+    ggplot2::scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-2, 2), oob = scales::squish, name = NULL) +
     ggplot2::labs(
       x = "x coordinates",
       y = "y coordinates"
@@ -865,7 +1114,7 @@ for (gene in genes) {
     )
   gene_plots[[paste0("NUC7738_", gene)]] <- nuc7738_plot
   ggsave(
-   filename = paste0("./results/SpatialTrans_combined_ONTgene/ONTgene/", gene, "_NUC7738_spatial_whole.png"),
+   filename = paste0("./figures/paper_figures/supplementary/", gene, "_NUC7738_spatial_whole.png"),
    plot = nuc7738_plot,
    width = 20,
    height = 10,
@@ -875,6 +1124,7 @@ for (gene in genes) {
 
 ```
 
+## Supplementary Figure: Whole-section combined grid
 
 ```{r}
 library(ggplot2)
@@ -926,15 +1176,33 @@ final_grid <- column_labels / labeled_grid +
   plot_layout(heights = c(0.02, 1))  # Adjust height for column labels
 
 # Save the final grid with column and row labels
-combined_save_path <- "./figures/paper_figures/figure_4_WholseSection_MT-CO1_RPL37_POLR2L.png"
+combined_save_path <- "./figures/paper_figures/supplementary/figure_4_WholseSection_MT-CO1_RPL37_POLR2L.png"
 ggsave(
   filename = combined_save_path,
   plot = final_grid,
-  width = 10,  # Adjust width to balance labels and plots
-  height = 25, # Adjust height to fit all gene pairs
-  dpi = 600
+  width = 10,
+  height = 25,
+  dpi = 600,
+  bg = "white"
+)
+
+# Also save as PDF
+ggsave(
+  filename = "./figures/paper_figures/supplementary/figure_4_WholseSection_MT-CO1_RPL37_POLR2L.pdf",
+  plot = final_grid,
+  width = 10,
+  height = 25,
+  device = cairo_pdf
 )
 
 # Print the final grid
 print(final_grid)
+```
+
+---
+
+# Session Information
+
+```{r}
+sessionInfo()
 ```

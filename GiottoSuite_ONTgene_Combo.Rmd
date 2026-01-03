@@ -383,6 +383,8 @@ custom_feats <- c(
   "HLA-B", "B2M", "SNHG9","GPNMB","CD74", "CSTA"
 )
 ```
+
+
 # Print the list to confirm
 print(custom_feats)
 
@@ -508,3 +510,9 @@ for (feat in custom_feats) {
 }
 ```
 
+
+
+# Session Information
+```{r}
+sessionInfo()
+```
