@@ -267,7 +267,7 @@ spatDimPlot2D(gobject = SpatialTrans_combined_ONTgene ,
 
 # Vizualizing the tissue contribution
 
-```{r}
+```{r step12_tissue_contribution}
 
 spatDimPlot2D(gobject = SpatialTrans_combined_ONTgene ,
               dim_reduction_to_use = "umap", 
@@ -275,6 +275,118 @@ spatDimPlot2D(gobject = SpatialTrans_combined_ONTgene ,
               cell_color = "list_ID", 
               save_plot = TRUE,
               save_param = base_save_parameters)
+```
+
+# Supplementary Figure S6: Harmony Batch Correction Assessment
+
+Assessment of batch effects before and after Harmony integration:
+
+- (A) Pre-Harmony Leiden clustering showing clusters segregated by tissue section
+- (B) Post-Harmony Leiden clustering demonstrating improved mixing across conditions
+- (C) Post-Harmony tissue contribution confirming balanced representation
+
+```{r figS6_harmony_assessment, fig.width=14, fig.height=8}
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+
+# Generate UMAP plots separately with minimal margins
+umap_A <- plotUMAP(gobject = SpatialTrans_combined_ONTgene,
+                   dim_reduction_name = "umap",
+                   cell_color = "leiden_clus",
+                   point_size = 2,
+                   title = "",
+                   return_plot = TRUE,
+                   save_plot = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0),
+        legend.position = "right",
+        legend.key.size = unit(0.3, "cm"))
+
+umap_B <- plotUMAP(gobject = SpatialTrans_combined_ONTgene,
+                   dim_reduction_name = "umap_harmony",
+                   cell_color = "leiden_harmony",
+                   point_size = 2,
+                   title = "",
+                   return_plot = TRUE,
+                   save_plot = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0),
+        legend.position = "right",
+        legend.key.size = unit(0.3, "cm"))
+
+umap_C <- plotUMAP(gobject = SpatialTrans_combined_ONTgene,
+                   dim_reduction_name = "umap_harmony",
+                   cell_color = "list_ID",
+                   point_size = 2,
+                   title = "",
+                   return_plot = TRUE,
+                   save_plot = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0),
+        legend.position = "right",
+        legend.key.size = unit(0.3, "cm"))
+
+# Generate spatial plots separately with minimal margins
+spat_A <- spatPlot2D(gobject = SpatialTrans_combined_ONTgene,
+                     cell_color = "leiden_clus",
+                     show_image = TRUE,
+                     image_name = c("DMSO-image", "30uM7738-image"),
+                     point_size = 2,
+                     title = "",
+                     return_plot = TRUE,
+                     save_plot = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0),
+        legend.position = "right",
+        legend.key.size = unit(0.3, "cm"))
+
+spat_B <- spatPlot2D(gobject = SpatialTrans_combined_ONTgene,
+                     cell_color = "leiden_harmony",
+                     show_image = TRUE,
+                     image_name = c("DMSO-image", "30uM7738-image"),
+                     point_size = 2,
+                     title = "",
+                     return_plot = TRUE,
+                     save_plot = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0),
+        legend.position = "right",
+        legend.key.size = unit(0.3, "cm"))
+
+spat_C <- spatPlot2D(gobject = SpatialTrans_combined_ONTgene,
+                     cell_color = "list_ID",
+                     show_image = TRUE,
+                     image_name = c("DMSO-image", "30uM7738-image"),
+                     point_size = 2,
+                     title = "",
+                     return_plot = TRUE,
+                     save_plot = FALSE) + 
+  theme(plot.margin = margin(0, 0, 0, 0),
+        legend.position = "right",
+        legend.key.size = unit(0.3, "cm"))
+
+# Add A, B, C labels directly to UMAP plots
+umap_A_labeled <- umap_A + labs(tag = "A") + theme(plot.tag = element_text(size = 14, face = "bold"))
+umap_B_labeled <- umap_B + labs(tag = "B") + theme(plot.tag = element_text(size = 14, face = "bold"))
+umap_C_labeled <- umap_C + labs(tag = "C") + theme(plot.tag = element_text(size = 14, face = "bold"))
+
+# Combine: UMAP row on top, spatial row on bottom (no separate label row)
+fig_S6 <- (umap_A_labeled | umap_B_labeled | umap_C_labeled) /
+          (spat_A | spat_B | spat_C) +
+  plot_layout(heights = c(1, 1.2)) +
+  plot_annotation(
+    title = "Supplementary Figure S6: Harmony Batch Correction Assessment",
+    theme = theme(
+      plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+      plot.margin = margin(2, 2, 2, 2)
+    )
+  ) &
+  theme(plot.margin = margin(1, 1, 1, 1))
+
+print(fig_S6)
+
+# Save Figure S6
+ggsave(filename = "./figures/paper_figures/supplementary/figure_S6_harmony_assessment.png",
+       plot = fig_S6,
+       width = 14, height = 8, dpi = 600)
+
+cat("Figure S6 saved to: ./figures/paper_figures/supplementary/figure_S6_harmony_assessment.png\n")
 ```
 
 
