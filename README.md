@@ -122,7 +122,11 @@ North Haugh, St Andrews, Fife, KY16 9TF, UK
 
 ## Citation
 
-> Abdullah, H., Zhang, Y., Kirkwood, K., Laird, A., Mullen, P., Harrison, D.J. and Elshani, M. (2025) 'Long-read spatial transcriptomics of patient-derived clear cell renal cell carcinoma organoids identifies heterogeneity and transcriptional remodelling following NUC-7738 treatment'. *\[Journal\]*.
+> Abdullah, H., Zhang, Y., Kirkwood, K., Laird, A., Mullen, P., Harrison, D. J., & Elshani, M. (2026).  
+> *Long-read spatial transcriptomics of patient-derived clear cell renal cell carcinoma organoids identifies heterogeneity and transcriptional remodelling following NUC-7738 treatment*.  
+> **Cancers, 18**(2), 254.  
+> https://doi.org/10.3390/cancers18020254
+
 
 ------------------------------------------------------------------------
 
